@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Kontor">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" type="image/png" href="apple-touch-icon.png">
@@ -149,13 +149,13 @@ svg.ic{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.9;str
 .press:active{transform:scale(.97)}
 
 /* ── Fußleiste ── */
-.tabbar{position:absolute;left:0;right:0;bottom:0;z-index:10;height:calc(var(--tabh) + var(--home));padding:5px max(6px,env(safe-area-inset-right,0px)) var(--home) max(6px,env(safe-area-inset-left,0px));display:grid;grid-template-columns:repeat(5,1fr);align-items:start;background:var(--chrome);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);border-top:.5px solid var(--line)}
-.tb{position:relative;height:52px;border:0;background:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;color:var(--text-3);font-size:10.5px;font-weight:500;letter-spacing:.01em}
-.tb .ic{width:24px;height:24px}
-.tb.on{color:var(--accent)}.tb.on span{font-weight:600}
-.tb em{position:absolute;top:3px;left:calc(50% + 5px);min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--a-solid);color:var(--on-accent);font:600 11px/18px var(--font);font-style:normal;text-align:center;box-shadow:0 0 0 2px var(--bg)}
-.tb-plus{justify-self:center;width:56px;height:56px;margin-top:-16px;border-radius:18px;border:0;background:var(--grad);color:var(--on-accent);display:grid;place-items:center;box-shadow:0 0 0 5px var(--bg),0 12px 26px -8px color-mix(in srgb,var(--a2) 70%,transparent)}
-.tb-plus .ic{width:26px;height:26px;stroke-width:2.5}
+.tabbar{position:absolute;left:max(12px,env(safe-area-inset-left,0px));right:max(12px,env(safe-area-inset-right,0px));bottom:calc(max(var(--home) - 14px,0px) + 10px);z-index:10;height:var(--tabh);padding:0 6px;display:grid;grid-template-columns:repeat(5,1fr);align-items:center;border-radius:999px;background:color-mix(in srgb,var(--card) 70%,transparent);-webkit-backdrop-filter:saturate(180%) blur(24px);backdrop-filter:saturate(180%) blur(24px);border:1px solid color-mix(in srgb,var(--line-2) 80%,transparent);box-shadow:0 14px 34px -14px rgba(3,6,20,.45),0 1px 0 rgba(255,255,255,.06) inset}
+.tb{position:relative;height:50px;margin:0 2px;border:0;border-radius:999px;background:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;color:var(--text-3);font-size:10.5px;font-weight:500;letter-spacing:.01em;transition:background-color .2s,color .2s}
+.tb .ic{width:23px;height:23px}
+.tb.on{color:var(--accent);background:var(--accent-soft)}.tb.on span{font-weight:600}
+.tb em{position:absolute;top:2px;left:calc(50% + 5px);min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--a-solid);color:var(--on-accent);font:600 11px/18px var(--font);font-style:normal;text-align:center;box-shadow:0 0 0 2px var(--card)}
+.tb-plus{justify-self:center;width:50px;height:50px;border-radius:999px;border:0;background:var(--grad);color:var(--on-accent);display:grid;place-items:center;box-shadow:0 8px 20px -8px color-mix(in srgb,var(--a2) 75%,transparent)}
+.tb-plus .ic{width:25px;height:25px;stroke-width:2.5}
 .footbar{position:absolute;left:0;right:0;bottom:0;z-index:5;padding:12px max(16px,env(safe-area-inset-right,0px)) calc(12px + var(--home)) max(16px,env(safe-area-inset-left,0px));background:var(--chrome);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);border-top:.5px solid var(--line);display:grid;grid-template-columns:1fr 1.35fr;gap:10px}
 .footbar.one{grid-template-columns:1fr}
 
@@ -419,14 +419,13 @@ select.inp{background-image:linear-gradient(45deg,transparent 50%,var(--text-3) 
 }
 
 </style>
-<style>/* Vollbild am Handy: Leisten reichen bis an den Rand, Abstand nur einmal */
-@media not all and (min-width:520px) and (min-height:700px){:root{--sb:env(safe-area-inset-top,0px);--home:env(safe-area-inset-bottom,0px)}}
+<style>/* Handy-Vollbild: App beginnt unter der Uhr-Leiste; unten Abstand für den Home-Balken */
+@media not all and (min-width:520px) and (min-height:700px){:root{--sb:0px;--home:env(safe-area-inset-bottom,0px)}}
 html,body{height:100%;overflow:hidden;overscroll-behavior:none}
 body{position:fixed;top:0;left:0;right:0;bottom:auto;width:100%;height:var(--app-h,100%)}</style>
-<script>/* iPhone-Vollbild: echte Bildschirmhöhe nehmen (sonst fehlt unten die Höhe der Statusleiste) */
-(function(){function h(){document.documentElement.style.setProperty('--app-h',window.innerHeight+'px');}
+<script>(function(){function h(){document.documentElement.style.setProperty('--app-h',window.innerHeight+'px');}
 h();addEventListener('resize',h);addEventListener('orientationchange',function(){setTimeout(h,300);});addEventListener('pageshow',h);})();</script>
-<!-- Version 4 -->
+<!-- Version 5 -->
 </head>
 <body>
 <div class="stage">
