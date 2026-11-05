@@ -421,7 +421,9 @@ select.inp{background-image:linear-gradient(45deg,transparent 50%,var(--text-3) 
 </style>
 <style>/* Vollbild am Handy: Leisten reichen bis an den Rand, Abstand nur einmal */
 @media not all and (min-width:520px) and (min-height:700px){:root{--sb:env(safe-area-inset-top,0px);--home:env(safe-area-inset-bottom,0px)}}
-html,body{height:100%}</style>
+html,body{height:100%;overflow:hidden;overscroll-behavior:none}
+body{position:fixed;inset:0;width:100%}</style>
+<!-- Version 3 -->
 </head>
 <body>
 <div class="stage">
