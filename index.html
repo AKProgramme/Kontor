@@ -2118,6 +2118,17 @@ start();
 .ks-pill.show{opacity:1;transform:translate(-50%,0)}
 .ks-pill.warn{background:rgba(150,95,0,.94)}
 .ks-pill.bad{background:rgba(180,35,45,.94)}
+.ks-pill.klick{pointer-events:auto;cursor:pointer}
+.ks-login{position:fixed;inset:0;z-index:95;display:none;align-items:center;justify-content:center;padding:24px;background:rgba(10,15,35,.45);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.ks-login.show{display:flex}
+.ks-card{width:100%;max-width:360px;background:var(--card,#fff);color:var(--text,#0E1530);border-radius:22px;padding:22px 20px 16px;box-shadow:0 20px 60px rgba(0,0,0,.3);display:flex;flex-direction:column;gap:10px;font:17px/1.35 -apple-system,BlinkMacSystemFont,system-ui,sans-serif}
+.ks-card b{font-size:20px}.ks-card p{margin:0;font-size:15px;opacity:.75}
+.ks-card input{font:17px -apple-system,system-ui,sans-serif;padding:12px 14px;border-radius:12px;border:1px solid rgba(120,130,160,.35);background:transparent;color:inherit;min-height:44px}
+.ks-card .ks-err{color:#c0262f;opacity:1;min-height:18px;font-size:14px}
+.ks-card button{min-height:48px;border-radius:14px;border:0;font:600 17px -apple-system,system-ui,sans-serif}
+.ks-pri{background:linear-gradient(135deg,#FF7A59,#E0338C);color:#fff}.ks-pri:disabled{opacity:.6}
+.ks-sec{background:transparent;color:inherit;opacity:.7}
+@media (prefers-color-scheme: dark){.ks-card{background:#1b2340;color:#f4f1ec}}
 </style>
 <script>
 /* Kontor-Abgleich (PC <-> Handy) über Firebase Firestore, ohne Zusatzpakete (nur REST/HTTP).
@@ -2226,8 +2237,12 @@ start();
 
     function setStatus(s, info) { status = s; try { opts.onStatus && opts.onStatus(s, info, lastOk); } catch (e) {} }
     async function call(method, url, body) {
-      let r;
-      try { r = await opts.http(method, url, body); } catch (e) { const er = new Error('offline'); er.offline = true; throw er; }
+      let r, headers;
+      if (opts.auth) {
+        const tok = await opts.auth.token(); // wirft bei fehlender Anmeldung
+        headers = { Authorization: 'Bearer ' + tok };
+      }
+      try { r = await opts.http(method, url, body, headers); } catch (e) { const er = new Error('offline'); er.offline = true; throw er; }
       if (!r || r.status === 0) { const er = new Error('offline'); er.offline = true; throw er; }
       if (r.status >= 400) {
         const msg = (r.json && r.json.error && r.json.error.message) || ('HTTP ' + r.status);
@@ -2373,15 +2388,26 @@ start();
       return 'übernommen';
     }
 
+    async function ensureState() {
+      if (state) return;
+      state = Object.assign({ h: {}, n: {}, t: {}, cursor: 0, init: false, dev: '' }, (await opts.loadState()) || {});
+      if (state.sammlung && state.sammlung !== coll) state = { h: {}, n: {}, t: {}, cursor: 0, init: false, dev: state.dev }; // andere Sammlung → neu beginnen
+      state.sammlung = coll;
+      if (!state.dev) state.dev = Math.random().toString(36).slice(2, 10);
+      await saveState();
+    }
     async function tick(force) {
       if (stopped && !force) return;
       if (busy) { again = true; return; }
       busy = true;
       try {
+        await ensureState();
         if (!state.init) { setStatus('verbinde'); const r = await firstSync(); lastOk = new Date(); setStatus('ok', r); }
         else { const n = await push(); await pull(); lastOk = new Date(); setStatus('ok', n ? 'gesendet' : ''); }
       } catch (e) {
-        if (e.warte) setStatus('warte');
+        if (e.anmelden) setStatus('anmelden', e.message);
+        else if (e.status === 401) { try { opts.auth && opts.auth.ungueltig(); } catch (x) {} setStatus('verbinde'); } // Token abgelaufen → nächste Runde neu holen
+        else if (e.warte) setStatus('warte');
         else if (e.offline) setStatus('offline');
         else if (e.status === 403 || e.status === 401) setStatus('fehler', 'Kein Zugriff – Regeln in Firebase prüfen');
         else if (e.status === 404) setStatus('fehler', 'Datenbank nicht gefunden – Firestore anlegen');
@@ -2400,17 +2426,13 @@ start();
     const api = {
       async start() {
         if (!cfg.apiKey || !cfg.projectId) { setStatus('aus', 'Kein Firebase-Zugang eingetragen'); return; }
-        state = Object.assign({ h: {}, n: {}, t: {}, cursor: 0, init: false, dev: '' }, (await opts.loadState()) || {});
-        if (state.sammlung && state.sammlung !== coll) state = { h: {}, n: {}, t: {}, cursor: 0, init: false, dev: state.dev }; // andere Sammlung → neu beginnen
-        state.sammlung = coll;
-        if (!state.dev) state.dev = Math.random().toString(36).slice(2, 10);
-        await saveState();
+        await ensureState();
         stopped = false; await tick(); plan();
         if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (!document.hidden) { tick(); } plan(); });
         if (typeof window !== 'undefined') { window.addEventListener('online', () => tick()); window.addEventListener('focus', () => tick()); }
       },
       stop() { stopped = true; clearTimeout(timer); },
-      soon() { if (!state) return; clearTimeout(soonT); soonT = setTimeout(tick, 700); }, // nach lokalem Speichern
+      soon() { clearTimeout(soonT); soonT = setTimeout(tick, 700); }, // nach lokalem Speichern
       now: () => tick(true),
       get status() { return status; }, get lastOk() { return lastOk; },
       _state: () => state
@@ -2426,7 +2448,58 @@ start();
     return out;
   }
 
-  const KSync = { create, split, applyDoc, hash, tsNum, tsIso, doppelteNummern, LOCAL_SETTINGS };
+  // ── Anmeldung bei Firebase (E-Mail + Passwort), ohne Zusatzpaket ──
+  // Die Anmeldung bleibt auf dem Gerät gespeichert (Refresh-Token); einmal anmelden reicht.
+  function createAuth(o) {
+    const key = encodeURIComponent(o.apiKey || '');
+    let saved = null, idTok = null, exp = 0, loaded = false;
+    async function load() { if (loaded) return; loaded = true; try { saved = (await o.load()) || null; } catch (e) { saved = null; } }
+    function fehler(code) {
+      code = String(code || '');
+      if (/INVALID_LOGIN_CREDENTIALS|INVALID_PASSWORD|EMAIL_NOT_FOUND|INVALID_EMAIL/.test(code)) return 'E-Mail oder Passwort stimmt nicht.';
+      if (/USER_DISABLED/.test(code)) return 'Dieses Konto ist in Firebase gesperrt.';
+      if (/TOO_MANY_ATTEMPTS/.test(code)) return 'Zu viele Versuche. Bitte ein paar Minuten warten.';
+      if (/OPERATION_NOT_ALLOWED|PASSWORD_LOGIN_DISABLED/.test(code)) return 'In Firebase ist die Anmeldung mit E-Mail/Passwort noch nicht eingeschaltet.';
+      if (/TOKEN_EXPIRED|INVALID_REFRESH_TOKEN|USER_NOT_FOUND/.test(code)) return 'Bitte neu anmelden.';
+      return 'Anmeldung fehlgeschlagen (' + code + ').';
+    }
+    const api = {
+      async angemeldet() { await load(); return saved && saved.refreshToken ? saved.email : null; },
+      async signIn(email, password) {
+        let r;
+        try { r = await o.http('POST', 'https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=' + key, { email: String(email || '').trim(), password, returnSecureToken: true }); }
+        catch (e) { return { ok: false, error: 'Kein Internet.' }; }
+        if (!r || r.status === 0) return { ok: false, error: 'Kein Internet.' };
+        if (r.status >= 400 || !r.json || !r.json.idToken) return { ok: false, error: fehler(r.json && r.json.error && r.json.error.message) };
+        saved = { email: r.json.email, refreshToken: r.json.refreshToken, uid: r.json.localId }; loaded = true;
+        idTok = r.json.idToken; exp = Date.now() + (parseInt(r.json.expiresIn, 10) || 3600) * 1000;
+        try { await o.save(saved); } catch (e) {}
+        return { ok: true, email: saved.email };
+      },
+      async signOut() { saved = null; idTok = null; exp = 0; loaded = true; try { await o.save(null); } catch (e) {} },
+      ungueltig() { idTok = null; exp = 0; },
+      async token() {
+        await load();
+        if (idTok && Date.now() < exp - 120000) return idTok;
+        if (!saved || !saved.refreshToken) { const e = new Error('Bitte anmelden'); e.anmelden = true; throw e; }
+        let r;
+        try { r = await o.http('POST', 'https://securetoken.googleapis.com/v1/token?key=' + key, 'grant_type=refresh_token&refresh_token=' + encodeURIComponent(saved.refreshToken), { 'Content-Type': 'application/x-www-form-urlencoded' }); }
+        catch (e) { const er = new Error('offline'); er.offline = true; throw er; }
+        if (!r || r.status === 0) { const er = new Error('offline'); er.offline = true; throw er; }
+        if (r.status >= 400 || !r.json || !r.json.id_token) {
+          const code = r.json && r.json.error && r.json.error.message;
+          if (/TOKEN_EXPIRED|INVALID_REFRESH_TOKEN|USER_NOT_FOUND|USER_DISABLED/.test(String(code))) { await api.signOut(); }
+          const e = new Error(fehler(code)); e.anmelden = true; throw e;
+        }
+        idTok = r.json.id_token; exp = Date.now() + (parseInt(r.json.expires_in, 10) || 3600) * 1000;
+        if (r.json.refresh_token && r.json.refresh_token !== saved.refreshToken) { saved.refreshToken = r.json.refresh_token; try { await o.save(saved); } catch (e) {} }
+        return idTok;
+      }
+    };
+    return api;
+  }
+
+  const KSync = { create, createAuth, split, applyDoc, hash, tsNum, tsIso, doppelteNummern, LOCAL_SETTINGS };
   if (typeof module !== 'undefined' && module.exports) module.exports = KSync;
   root.KSync = KSync;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -2436,13 +2509,13 @@ start();
 /* Abgleich Handy <-> PC (nutzt kontor-sync.js) */
 (function(){
 'use strict';
-const CONFIG={"aktiv": true, "apiKey": "AIzaSyBpF1xZ-C1q9S6t2cFJV6J6z3YKtz0m8uI", "projectId": "kontorrug", "sammlung": "test"};
+const CONFIG={"aktiv": true, "apiKey": "AIzaSyBpF1xZ-C1q9S6t2cFJV6J6z3YKtz0m8uI", "projectId": "kontorrug", "sammlung": "daten"};
 const K=()=>window.__kontor;
 let ks=null,lastTxt='',pillT=null,waitRefresh=false;
-function pill(txt,art,bleibt){
+function pill(txt,art,bleibt,klick){
   let p=document.getElementById('ksPill');
-  if(!p){p=document.createElement('div');p.id='ksPill';document.body.appendChild(p);}
-  p.className='ks-pill'+(art?' '+art:'');p.textContent=txt;p.classList.add('show');
+  if(!p){p=document.createElement('div');p.id='ksPill';document.body.appendChild(p);p.addEventListener('click',()=>{if(p.classList.contains('klick'))loginZeigen();});}
+  p.className='ks-pill'+(art?' '+art:'')+(klick?' klick':'');p.textContent=txt;p.classList.add('show');
   clearTimeout(pillT);if(!bleibt)pillT=setTimeout(()=>p.classList.remove('show'),2200);
 }
 function pillWeg(){const p=document.getElementById('ksPill');if(p)p.classList.remove('show');}
@@ -2459,16 +2532,38 @@ function neuZeichnen(){
 }
 function setText(t){window.__ksText=t;}
 function zeit(d){return d?d.getHours()+':'+String(d.getMinutes()).padStart(2,'0'):'';}
+const http=async(m,u,b,h)=>{const ctl=new AbortController();const t=setTimeout(()=>ctl.abort(),30000);
+  try{const r=await fetch(u,{method:m,headers:Object.assign({'Content-Type':'application/json'},h||{}),body:b===undefined?undefined:(typeof b==='string'?b:JSON.stringify(b)),signal:ctl.signal});let j=null;try{j=await r.json();}catch(e){}return{status:r.status,json:j};}
+  catch(e){return{status:0,json:null};}finally{clearTimeout(t);}};
+let auth=null,loginGezeigt=false;
+function loginZeigen(hinweis){
+  let o=document.getElementById('ksLogin');
+  if(!o){o=document.createElement('div');o.id='ksLogin';o.className='ks-login';
+    o.innerHTML=`<form class="ks-card" autocomplete="on"><b>Abgleich mit dem PC</b><p>Einmal anmelden – danach bleibt das Handy angemeldet.</p>
+      <input id="ksMail" type="email" autocomplete="username" placeholder="E-Mail" value="kelmendi.arber@gmx.net">
+      <input id="ksPass" type="password" autocomplete="current-password" placeholder="Passwort">
+      <p class="ks-err" id="ksErr"></p>
+      <button type="submit" class="ks-pri">Anmelden</button><button type="button" class="ks-sec" id="ksSpaeter">Später</button></form>`;
+    document.body.appendChild(o);
+    o.querySelector('#ksSpaeter').onclick=()=>o.classList.remove('show');
+    o.querySelector('form').onsubmit=async e=>{e.preventDefault();const err=o.querySelector('#ksErr');const btn=o.querySelector('.ks-pri');
+      const r=await (btn.disabled=true,err.textContent='',auth.signIn(o.querySelector('#ksMail').value,o.querySelector('#ksPass').value));btn.disabled=false;
+      if(!r.ok){err.textContent=r.error;return;}
+      o.querySelector('#ksPass').value='';o.classList.remove('show');pill('Angemeldet – gleiche ab …');ks.now();};
+  }
+  o.querySelector('#ksErr').textContent=hinweis&&hinweis!=='Bitte anmelden'?hinweis:'';
+  o.classList.add('show');
+}
+window.__ksLogin=()=>loginZeigen();
 function start(){
   if(!window.KSync||!CONFIG||!CONFIG.apiKey){setText('Abgleich ist noch nicht eingerichtet.');return;}
-  ks=KSync.create({config:CONFIG,
-    http:async(m,u,b)=>{const ctl=new AbortController();const t=setTimeout(()=>ctl.abort(),30000);
-      try{const r=await fetch(u,{method:m,headers:{'Content-Type':'application/json'},body:b===undefined?undefined:JSON.stringify(b),signal:ctl.signal});let j=null;try{j=await r.json();}catch(e){}return{status:r.status,json:j};}
-      catch(e){return{status:0,json:null};}finally{clearTimeout(t);}},
+  auth=KSync.createAuth({apiKey:CONFIG.apiKey,http,load:async()=>{try{return JSON.parse(localStorage.getItem('kontorAnmeldung')||'null');}catch(e){return null;}},
+    save:async a=>{try{if(a)localStorage.setItem('kontorAnmeldung',JSON.stringify(a));else localStorage.removeItem('kontorAnmeldung');}catch(e){}}});
+  ks=KSync.create({config:CONFIG,auth,http,
     getDb:()=>K().db,
     loadState:async()=>{try{return JSON.parse(localStorage.getItem('kontorAbgleich')||'null');}catch(e){return null;}},
     saveState:async st=>{try{localStorage.setItem('kontorAbgleich',JSON.stringify(st));}catch(e){}},
-    mayUpload:()=>!(K().db.settings&&K().db.settings.handyDemo),
+    mayUpload:()=>false, // das Handy lädt nie als Erstes hoch – die Daten kommen vom PC
     onRemote:async()=>{K().persist();neuZeichnen();pill('Vom PC aktualisiert');
       try{const d=KSync.doppelteNummern(K().db);if(d.length)K().toast('Nummer '+d.map(g=>g[0].nr).join(', ')+' gibt es doppelt','Bitte prüfen','warn');}catch(e){}},
     onReplaceAll:async neu=>{
@@ -2482,6 +2577,7 @@ function start(){
       else if(s==='offline'){setText('Gerade kein Internet. Du kannst normal weiterarbeiten, der Abgleich holt alles nach.');pill('Offline – gleicht später ab','warn',true);}
       else if(s==='warte'){setText('Warte auf die Daten vom PC. Bitte Kontor am PC einmal starten.');pill('Warte auf Daten vom PC','warn',true);}
       else if(s==='verbinde'){setText('Verbinde …');}
+      else if(s==='anmelden'){setText('Bitte einmal anmelden – oben auf „Anmelden“ tippen.');pill('Zum Abgleich anmelden','warn',true,true);if(!loginGezeigt){loginGezeigt=true;loginZeigen(info);}}
       else if(s==='fehler'){setText('Abgleich: '+(info||'Fehler'));pill('Abgleich: '+(info||'Fehler'),'bad',true);}
       lastTxt=s;
     }});
