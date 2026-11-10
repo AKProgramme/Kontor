@@ -1738,7 +1738,7 @@ VIEWS.mehr=()=>({title:'Mehr',body:`<h1 class="lt">Mehr</h1>
   <div class="list">
    ${[['kunden','users','Kunden',db.customers.length+' Kunden'],['preise','tag','Preise','Leistungen, Hauptliste und Kataloge'],['bericht','chart','Berichte','Monat und Jahr'],['einstellungen','gear','Einstellungen','Farbe und Daten']].map(r=>`<button class="row press" data-act="go" data-v="${r[0]}"><span class="row-ic">${ic(r[1])}</span><span class="row-main"><b>${r[2]}</b><small>${r[3]}</small></span>${ic('chev','chev')}</button>`).join('')}
   </div>
-  <div class="note-box">${ic('sync')}<span><b>Abgleich mit dem PC:</b> kommt mit dem Spiegeln. Bis dahin bleiben die Daten nur auf diesem Handy.${db.settings.handyDemo?' Gerade siehst du Beispieldaten.':''}</span></div>`});
+  <div class="note-box">${ic('sync')}<span><b>Abgleich mit dem PC:</b> ${esc(window.__ksText||'Verbinde …')}</span></div>`});
 VIEWS.kunden=()=>{
   const q=S.kq.trim().toLowerCase();const f=c=>!q||[c.name,c.contact,c.kuerzel,c.plzOrt].join(' ').toLowerCase().includes(q);
   const grp=[['Annahmestellen',db.customers.filter(c=>c.nrType!=='firma'&&f(c)).sort((a,b)=>(a.annahmeNr||0)-(b.annahmeNr||0))],['Firmenkunden',db.customers.filter(c=>c.nrType==='firma'&&f(c)).sort((a,b)=>a.name.localeCompare(b.name))]];
@@ -2104,12 +2104,392 @@ async function start(){
   ortLaden();
   try{const mq=matchMedia('(min-width:700px) and (pointer:coarse)');mq.addEventListener('change',()=>{document.querySelectorAll('.screen.push').forEach((x,i)=>x.classList.toggle('root',i===0));markSel();});}catch(e){}
   setTimeout(()=>{libs().catch(()=>{});},1500);
-  window.__kontor={get db(){return db;},set db(v){db=v;},K,A,S,refresh,pdfBlob,seitenBauen,docFuer,push,pop,top,editorOeffnen,edF,openSheet,closeSheet,SF:()=>SF,MF:()=>MF,AF:()=>AF,KF:()=>KF,showTab,schnellSheet,monatSheet,ausgabeSheet,kbSheet,demoDaten,normDb,sheetCancel,plusSheet,breit,get SH(){return SH;},UNDO:()=>UNDO};
+  window.__kontor={get db(){return db;},set db(v){db=v;},toast,persist,K,A,S,refresh,pdfBlob,seitenBauen,docFuer,push,pop,top,editorOeffnen,edF,openSheet,closeSheet,SF:()=>SF,MF:()=>MF,AF:()=>AF,KF:()=>KF,showTab,schnellSheet,monatSheet,ausgabeSheet,kbSheet,demoDaten,normDb,sheetCancel,plusSheet,breit,get SH(){return SH;},UNDO:()=>UNDO};
 }
 start();
 })();
 
 </script>
 
+<style>
+.ks-pill{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 8px);z-index:90;transform:translate(-50%,-12px);opacity:0;pointer-events:none;
+  transition:opacity .25s,transform .3s cubic-bezier(.32,.72,0,1);padding:7px 14px;border-radius:999px;font:600 13px/1.2 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  background:rgba(30,40,70,.92);color:#fff;box-shadow:0 6px 20px rgba(0,0,0,.25);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);max-width:calc(100% - 32px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ks-pill.show{opacity:1;transform:translate(-50%,0)}
+.ks-pill.warn{background:rgba(150,95,0,.94)}
+.ks-pill.bad{background:rgba(180,35,45,.94)}
+</style>
+<script>
+/* Kontor-Abgleich (PC <-> Handy) über Firebase Firestore, ohne Zusatzpakete (nur REST/HTTP).
+   Gleiche Datei für Kontor am PC und die Handy-App.
+
+   Prinzip:
+   - Die Daten (daten.json-Format) werden in einzelne Einträge zerlegt: jede Rechnung, jeder Kunde,
+     jede Ausgabe, jeder Scan, jeder Kassenbuch-Monat … ist ein eigenes Dokument in Firestore.
+   - Geändert wird nur, was sich wirklich geändert hat. Wer zuletzt speichert, gewinnt – pro Eintrag.
+   - Große Einträge (Fotos, PDFs) werden in Stücke geteilt (Firestore: höchstens 1 MB pro Dokument).
+   - Alle paar Sekunden wird nachgesehen, ob es neue Einträge vom anderen Gerät gibt.
+   - Gelöschte Einträge bleiben als Löschmarke stehen, damit das andere Gerät sie auch löscht.
+   - Ohne Internet läuft alles normal weiter; der Abgleich holt alles nach, sobald Netz da ist.
+*/
+(function (root) {
+  'use strict';
+
+  const ARR_KEYS = ['customers', 'invoices', 'catalog', 'kataloge', 'fixkosten', 'ausgaben', 'kbScans'];
+  const MAP_KEYS = ['customerPrices', 'kassenbuch'];
+  // Einstellungen, die auf jedem Gerät eigen bleiben (Mail-Passwort, Design, Ordner auf dem PC)
+  const LOCAL_SETTINGS = ['mailKonto', 'design', 'pdfOrdner', 'autoAblegen'];
+  const PART = 350000;          // Zeichen pro Stück (sicher unter 1 MB)
+  const BATCH_CHARS = 4000000;  // Zeichen pro Sendung
+  const BATCH_WRITES = 400;
+  const OVERLAP_US = 15e6;      // 15 s Überlappung beim Nachsehen
+
+  // ── kleine Helfer ──
+  function hash(s) { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(36) + '.' + s.length.toString(36); }
+  function safeId(s) { return String(s).replace(/[^A-Za-z0-9_.\-]/g, c => '_' + c.charCodeAt(0).toString(16)) || '_'; }
+  function tsNum(iso) { // RFC3339 → Mikrosekunden (Zahl)
+    const m = /^(.*?)(?:\.(\d+))?Z$/.exec(String(iso || '')); if (!m) return 0;
+    return Math.floor(Date.parse(m[1] + 'Z') / 1000) * 1e6 + parseInt(((m[2] || '') + '000000').slice(0, 6), 10);
+  }
+  function tsIso(us) { const s = Math.floor(us / 1e6); return new Date(s * 1000).toISOString().slice(0, 19) + '.' + String(Math.floor(us % 1e6)).padStart(6, '0') + 'Z'; }
+  const sv = v => ({ stringValue: String(v) });
+  const gs = (f, k) => (f && f[k] && f[k].stringValue) || '';
+
+  function settingsShared(s) { const o = Object.assign({}, s || {}); LOCAL_SETTINGS.forEach(k => delete o[k]); return o; }
+
+  // Daten → Einträge {id: {k, s, j}}
+  function split(db) {
+    const out = {};
+    const put = (k, s, v) => { const id = s === null ? safeId(k) : safeId(k) + '~' + safeId(s); out[id] = { k, s: s === null ? '' : String(s), j: JSON.stringify(v === undefined ? null : v) }; };
+    Object.keys(db || {}).forEach(k => {
+      const v = db[k];
+      if (ARR_KEYS.includes(k) && Array.isArray(v) && v.every(x => x && typeof x === 'object' && x.id != null && x.id !== '')) {
+        v.forEach(x => put(k, x.id, x));
+        put(k + '#', null, { reihe: v.map(x => String(x.id)) }); // Reihenfolge der Liste
+      } else if (MAP_KEYS.includes(k) && v && typeof v === 'object' && !Array.isArray(v)) {
+        Object.keys(v).forEach(s => put(k, s, v[s]));
+        put(k + '#', null, { map: true });
+      } else if (k === 'settings') {
+        put(k, null, settingsShared(v));
+      } else {
+        put(k, null, v);
+      }
+    });
+    return out;
+  }
+
+  // Einen Eintrag in die Daten übernehmen (oder löschen, wenn val === undefined)
+  function applyDoc(db, k, s, val) {
+    if (k.endsWith('#')) { // Reihenfolge / Markierung
+      const base = k.slice(0, -1);
+      if (val === undefined) return;
+      if (val && Array.isArray(val.reihe)) {
+        if (!Array.isArray(db[base])) db[base] = [];
+        const pos = {}; val.reihe.forEach((id, i) => pos[id] = i);
+        db[base].sort((a, b) => (pos[String(a.id)] ?? 1e9) - (pos[String(b.id)] ?? 1e9));
+      } else if (val && val.map) { if (!db[base] || typeof db[base] !== 'object') db[base] = {}; }
+      return;
+    }
+    if (s) {
+      if (MAP_KEYS.includes(k)) {
+        if (!db[k] || typeof db[k] !== 'object' || Array.isArray(db[k])) db[k] = {};
+        if (val === undefined) delete db[k][s]; else db[k][s] = val;
+      } else {
+        if (!Array.isArray(db[k])) db[k] = [];
+        const i = db[k].findIndex(x => x && String(x.id) === s);
+        if (val === undefined) { if (i >= 0) db[k].splice(i, 1); }
+        else if (i >= 0) db[k][i] = val; else db[k].push(val);
+      }
+      return;
+    }
+    if (k === 'settings') {
+      if (!db.settings || typeof db.settings !== 'object') db.settings = {};
+      const keep = {}; LOCAL_SETTINGS.forEach(x => { if (x in db.settings) keep[x] = db.settings[x]; });
+      Object.keys(db.settings).forEach(x => delete db.settings[x]);
+      Object.assign(db.settings, val || {}, keep);
+      return;
+    }
+    if (val === undefined) { delete db[k]; return; }
+    if (db[k] && typeof db[k] === 'object' && !Array.isArray(db[k]) && val && typeof val === 'object' && !Array.isArray(val)) {
+      Object.keys(db[k]).forEach(x => delete db[k][x]); Object.assign(db[k], val); // gleiche Objekt-Referenz behalten
+    } else db[k] = val;
+  }
+
+  function create(opts) {
+    const cfg = opts.config || {};
+    const coll = cfg.sammlung || cfg.collection || 'test';
+    const base = 'https://firestore.googleapis.com/v1/projects/' + cfg.projectId + '/databases/(default)/documents';
+    const full = id => 'projects/' + cfg.projectId + '/databases/(default)/documents/' + coll + '/' + id;
+    const fullPart = id => 'projects/' + cfg.projectId + '/databases/(default)/documents/' + coll + '_teile/' + id;
+    const keyQ = '?key=' + encodeURIComponent(cfg.apiKey || '');
+    let state = null, timer = null, busy = false, again = false, stopped = false, lastOk = null, status = 'aus';
+
+    function setStatus(s, info) { status = s; try { opts.onStatus && opts.onStatus(s, info, lastOk); } catch (e) {} }
+    async function call(method, url, body) {
+      let r;
+      try { r = await opts.http(method, url, body); } catch (e) { const er = new Error('offline'); er.offline = true; throw er; }
+      if (!r || r.status === 0) { const er = new Error('offline'); er.offline = true; throw er; }
+      if (r.status >= 400) {
+        const msg = (r.json && r.json.error && r.json.error.message) || ('HTTP ' + r.status);
+        const er = new Error(msg); er.status = r.status; throw er;
+      }
+      return r.json;
+    }
+    async function saveState() { try { await opts.saveState(state); } catch (e) {} }
+
+    // ── Hochladen: nur geänderte Einträge ──
+    async function push() {
+      const docs = split(opts.getDb());
+      const jobs = [];
+      Object.keys(docs).forEach(id => { const d = docs[id]; const h = hash(d.j); if (state.h[id] !== h) jobs.push({ id, d, h }); });
+      Object.keys(state.h).forEach(id => { if (!docs[id]) jobs.push({ id, del: true }); });
+      if (!jobs.length) return 0;
+      let batch = [], chars = 0, writes = 0, n = 0;
+      const flush = async () => {
+        if (!batch.length) return;
+        const res = await call('POST', base + ':commit' + keyQ, { writes: batch.flatMap(b => b.w) });
+        const wr = (res && res.writeResults) || [];
+        let wi = 0;
+        batch.forEach(b => {
+          b.w.forEach((w, i) => { if (i === b.main) { const t = tsNum(wr[wi] && wr[wi].transformResults && wr[wi].transformResults[0] && wr[wi].transformResults[0].timestampValue || res.commitTime); state.t[b.id] = t; } wi++; });
+          if (b.del) { delete state.h[b.id]; delete state.n[b.id]; } else { state.h[b.id] = b.h; state.n[b.id] = b.parts; }
+          n++;
+        });
+        batch = []; chars = 0; writes = 0; await saveState();
+      };
+      for (const job of jobs) {
+        const w = [];
+        const oldH = state.h[job.id], oldN = state.n[job.id] || 0;
+        if (oldH && oldN) for (let i = 0; i < oldN; i++) w.push({ delete: fullPart(job.id + '~' + oldH + '~' + i) });
+        let fields, parts = 0;
+        if (job.del) fields = { d: { booleanValue: true }, dev: sv(state.dev), h: sv('') };
+        else {
+          const j = job.d.j;
+          fields = { k: sv(job.d.k), s: sv(job.d.s), h: sv(job.h), dev: sv(state.dev), d: { booleanValue: false } };
+          if (j.length > PART) {
+            parts = Math.ceil(j.length / PART);
+            for (let i = 0; i < parts; i++) w.push({ update: { name: fullPart(job.id + '~' + job.h + '~' + i), fields: { j: sv(j.slice(i * PART, (i + 1) * PART)) } } });
+            fields.n = { integerValue: String(parts) };
+          } else { fields.j = sv(j); fields.n = { integerValue: '0' }; }
+        }
+        const main = w.length;
+        w.push({ update: { name: full(job.id), fields }, updateTransforms: [{ fieldPath: 't', setToServerValue: 'REQUEST_TIME' }] });
+        const size = job.del ? 100 : job.d.j.length + 200;
+        if (batch.length && (chars + size > BATCH_CHARS || writes + w.length > BATCH_WRITES)) await flush();
+        batch.push({ id: job.id, w, main, h: job.h, parts, del: !!job.del }); chars += size; writes += w.length;
+      }
+      await flush();
+      return n;
+    }
+
+    // ── Holen: was hat das andere Gerät geändert? ──
+    async function query(fromUs) {
+      const sq = { from: [{ collectionId: coll }], orderBy: [{ field: { fieldPath: 't' }, direction: 'ASCENDING' }] };
+      if (fromUs > 0) sq.where = { fieldFilter: { field: { fieldPath: 't' }, op: 'GREATER_THAN', value: { timestampValue: tsIso(Math.max(0, fromUs)) } } };
+      const res = await call('POST', base + ':runQuery' + keyQ, { structuredQuery: sq });
+      return (Array.isArray(res) ? res : []).filter(r => r && r.document).map(r => r.document);
+    }
+    async function docJson(id, f) {
+      const n = parseInt((f.n && f.n.integerValue) || '0', 10);
+      if (!n) return gs(f, 'j');
+      const names = []; for (let i = 0; i < n; i++) names.push(fullPart(id + '~' + gs(f, 'h') + '~' + i));
+      const res = await call('POST', base + ':batchGet' + keyQ, { documents: names });
+      const byName = {}; (Array.isArray(res) ? res : []).forEach(r => { if (r.found) byName[r.found.name] = gs(r.found.fields, 'j'); });
+      let j = ''; for (const nm of names) { if (!(nm in byName)) return null; j += byName[nm]; }
+      return j;
+    }
+
+    async function pull() {
+      const docs = await query(state.cursor ? state.cursor - OVERLAP_US : 0);
+      let newCursor = state.cursor || 0, failedT = Infinity;
+      const changes = [];
+      for (const doc of docs) {
+        const id = doc.name.split('/').pop(); const f = doc.fields || {};
+        const t = tsNum(f.t && f.t.timestampValue);
+        if (t > newCursor) newCursor = t;
+        if (state.t[id] && t <= state.t[id]) continue;
+        const del = !!(f.d && f.d.booleanValue);
+        if (!del && gs(f, 'h') === state.h[id]) { state.t[id] = t; continue; }
+        let val;
+        if (!del) {
+          const j = await docJson(id, f);
+          if (j === null) { failedT = Math.min(failedT, t); continue; }
+          try { val = JSON.parse(j); } catch (e) { continue; }
+        }
+        changes.push({ id, t, del, k: gs(f, 'k'), s: gs(f, 's'), h: gs(f, 'h'), n: parseInt((f.n && f.n.integerValue) || '0', 10), val });
+      }
+      if (failedT < Infinity) newCursor = Math.min(newCursor, failedT - 1);
+      if (changes.length) {
+        const db = opts.getDb();
+        // Lokal geänderte, noch nicht hochgeladene Einträge nicht überschreiben (die gehen gleich hoch)
+        const local = split(db);
+        const applied = [];
+        for (const c of changes) {
+          const lh = local[c.id] ? hash(local[c.id].j) : undefined;
+          const dirty = (lh || undefined) !== (state.h[c.id] || undefined);
+          if (dirty) continue;
+          // Löschmarke: k/s stehen nicht im Dokument → aus dem lokalen Eintrag nehmen
+          const k = c.del ? (local[c.id] && local[c.id].k) : c.k;
+          const s = c.del ? (local[c.id] && local[c.id].s) : c.s;
+          if (k) applyDoc(db, k, s || '', c.del ? undefined : c.val);
+          if (c.del) { delete state.h[c.id]; delete state.n[c.id]; } else { state.h[c.id] = c.h; state.n[c.id] = c.n; }
+          state.t[c.id] = c.t;
+          if (k) applied.push(k.replace(/#$/, ''));
+        }
+        // Reihenfolge-Einträge zuletzt nochmal anwenden (falls Elemente erst jetzt dazukamen)
+        changes.filter(c => c.k && c.k.endsWith('#') && !c.del).forEach(c => applyDoc(db, c.k, '', c.val));
+        if (applied.length) { try { await opts.onRemote([...new Set(applied)]); } catch (e) { console.error(e); } }
+      }
+      state.cursor = newCursor;
+      await saveState();
+    }
+
+    // ── Erster Abgleich eines Geräts ──
+    async function firstSync() {
+      const docs = await query(0);
+      const live = docs.filter(d => !(d.fields && d.fields.d && d.fields.d.booleanValue));
+      if (!live.length) { // Online ist noch nichts: dieses Gerät lädt seine Daten hoch
+        if (opts.mayUpload && !opts.mayUpload()) { const e = new Error('warte'); e.warte = true; throw e; } // z. B. Handy mit Beispieldaten
+        state.init = true; await saveState();
+        await push(); await pull(); return 'hochgeladen';
+      }
+      // Online gibt es schon Daten: dieses Gerät übernimmt sie (eigener Stand wird vorher gesichert)
+      const neu = {}; const h = {}, n = {}, t = {};
+      const cur = opts.getDb() || {};
+      if (cur.settings) { neu.settings = {}; LOCAL_SETTINGS.forEach(x => { if (x in cur.settings) neu.settings[x] = cur.settings[x]; }); }
+      let maxT = 0; const order = [];
+      for (const d of live) {
+        const id = d.name.split('/').pop(); const f = d.fields || {}; const tt = tsNum(f.t && f.t.timestampValue);
+        if (tt > maxT) maxT = tt;
+        const j = await docJson(id, f); if (j === null) throw new Error('Daten online unvollständig, bitte gleich nochmal.');
+        const val = JSON.parse(j); const k = gs(f, 'k');
+        if (k.endsWith('#')) order.push({ k, val }); else applyDoc(neu, k, gs(f, 's'), val);
+        h[id] = gs(f, 'h'); n[id] = parseInt((f.n && f.n.integerValue) || '0', 10); t[id] = tt;
+      }
+      order.forEach(o => applyDoc(neu, o.k, '', o.val));
+      docs.forEach(d => { const tt = tsNum(d.fields && d.fields.t && d.fields.t.timestampValue); if (tt > maxT) maxT = tt; });
+      await opts.onReplaceAll(neu);
+      state.h = h; state.n = n; state.t = t; state.cursor = maxT; state.init = true; await saveState();
+      return 'übernommen';
+    }
+
+    async function tick(force) {
+      if (stopped && !force) return;
+      if (busy) { again = true; return; }
+      busy = true;
+      try {
+        if (!state.init) { setStatus('verbinde'); const r = await firstSync(); lastOk = new Date(); setStatus('ok', r); }
+        else { const n = await push(); await pull(); lastOk = new Date(); setStatus('ok', n ? 'gesendet' : ''); }
+      } catch (e) {
+        if (e.warte) setStatus('warte');
+        else if (e.offline) setStatus('offline');
+        else if (e.status === 403 || e.status === 401) setStatus('fehler', 'Kein Zugriff – Regeln in Firebase prüfen');
+        else if (e.status === 404) setStatus('fehler', 'Datenbank nicht gefunden – Firestore anlegen');
+        else setStatus('fehler', String(e.message || e));
+      } finally {
+        busy = false;
+        if (again && !stopped) { again = false; setTimeout(tick, 50); }
+      }
+    }
+    function plan() {
+      clearTimeout(timer); if (stopped) return;
+      const hidden = typeof document !== 'undefined' && document.hidden;
+      timer = setTimeout(async () => { await tick(); plan(); }, hidden ? 30000 : 4000);
+    }
+    let soonT = null;
+    const api = {
+      async start() {
+        if (!cfg.apiKey || !cfg.projectId) { setStatus('aus', 'Kein Firebase-Zugang eingetragen'); return; }
+        state = Object.assign({ h: {}, n: {}, t: {}, cursor: 0, init: false, dev: '' }, (await opts.loadState()) || {});
+        if (state.sammlung && state.sammlung !== coll) state = { h: {}, n: {}, t: {}, cursor: 0, init: false, dev: state.dev }; // andere Sammlung → neu beginnen
+        state.sammlung = coll;
+        if (!state.dev) state.dev = Math.random().toString(36).slice(2, 10);
+        await saveState();
+        stopped = false; await tick(); plan();
+        if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (!document.hidden) { tick(); } plan(); });
+        if (typeof window !== 'undefined') { window.addEventListener('online', () => tick()); window.addEventListener('focus', () => tick()); }
+      },
+      stop() { stopped = true; clearTimeout(timer); },
+      soon() { if (!state) return; clearTimeout(soonT); soonT = setTimeout(tick, 700); }, // nach lokalem Speichern
+      now: () => tick(true),
+      get status() { return status; }, get lastOk() { return lastOk; },
+      _state: () => state
+    };
+    return api;
+  }
+
+  // Doppelte Rechnungsnummern finden (nicht stornierte)
+  function doppelteNummern(db) {
+    const m = {}; const out = [];
+    (db.invoices || []).forEach(i => { if (!i || !i.nr || i.status === 'storniert') return; const k = String(i.nr).trim().toUpperCase(); (m[k] = m[k] || []).push(i); });
+    Object.keys(m).forEach(k => { if (m[k].length > 1) out.push(m[k]); });
+    return out;
+  }
+
+  const KSync = { create, split, applyDoc, hash, tsNum, tsIso, doppelteNummern, LOCAL_SETTINGS };
+  if (typeof module !== 'undefined' && module.exports) module.exports = KSync;
+  root.KSync = KSync;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+/* Abgleich Handy <-> PC (nutzt kontor-sync.js) */
+(function(){
+'use strict';
+const CONFIG={"aktiv": true, "apiKey": "AIzaSyBpF1xZ-C1q9S6t2cFJV6J6z3YKtz0m8uI", "projectId": "kontorrug", "sammlung": "test"};
+const K=()=>window.__kontor;
+let ks=null,lastTxt='',pillT=null,waitRefresh=false;
+function pill(txt,art,bleibt){
+  let p=document.getElementById('ksPill');
+  if(!p){p=document.createElement('div');p.id='ksPill';document.body.appendChild(p);}
+  p.className='ks-pill'+(art?' '+art:'');p.textContent=txt;p.classList.add('show');
+  clearTimeout(pillT);if(!bleibt)pillT=setTimeout(()=>p.classList.remove('show'),2200);
+}
+function pillWeg(){const p=document.getElementById('ksPill');if(p)p.classList.remove('show');}
+function sicher(){ // nicht neu zeichnen, während getippt wird oder ein Fenster offen ist
+  const k=K();const ae=document.activeElement;
+  if(k.SH)return false;
+  if(ae&&/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))return false;
+  return true;
+}
+function neuZeichnen(){
+  if(sicher()){try{K().refresh();}catch(e){console.error(e);}return;}
+  if(waitRefresh)return;waitRefresh=true;
+  const iv=setInterval(()=>{if(sicher()){clearInterval(iv);waitRefresh=false;try{K().refresh();}catch(e){}}},800);
+}
+function setText(t){window.__ksText=t;}
+function zeit(d){return d?d.getHours()+':'+String(d.getMinutes()).padStart(2,'0'):'';}
+function start(){
+  if(!window.KSync||!CONFIG||!CONFIG.apiKey){setText('Abgleich ist noch nicht eingerichtet.');return;}
+  ks=KSync.create({config:CONFIG,
+    http:async(m,u,b)=>{const ctl=new AbortController();const t=setTimeout(()=>ctl.abort(),30000);
+      try{const r=await fetch(u,{method:m,headers:{'Content-Type':'application/json'},body:b===undefined?undefined:JSON.stringify(b),signal:ctl.signal});let j=null;try{j=await r.json();}catch(e){}return{status:r.status,json:j};}
+      catch(e){return{status:0,json:null};}finally{clearTimeout(t);}},
+    getDb:()=>K().db,
+    loadState:async()=>{try{return JSON.parse(localStorage.getItem('kontorAbgleich')||'null');}catch(e){return null;}},
+    saveState:async st=>{try{localStorage.setItem('kontorAbgleich',JSON.stringify(st));}catch(e){}},
+    mayUpload:()=>!(K().db.settings&&K().db.settings.handyDemo),
+    onRemote:async()=>{K().persist();neuZeichnen();pill('Vom PC aktualisiert');
+      try{const d=KSync.doppelteNummern(K().db);if(d.length)K().toast('Nummer '+d.map(g=>g[0].nr).join(', ')+' gibt es doppelt','Bitte prüfen','warn');}catch(e){}},
+    onReplaceAll:async neu=>{
+      try{localStorage.setItem('kontorVorAbgleich',new Date().toISOString());}catch(e){}
+      const k=K();const d=k.normDb(neu);delete d.settings.handyDemo;
+      try{d.settings.katalogeMigriert=d.settings.katalogeMigriert||1;}catch(e){}
+      k.db=d;k.persist();neuZeichnen();pill('Daten vom PC übernommen');
+    },
+    onStatus:(s,info,last)=>{
+      if(s==='ok'){setText('Abgeglichen um '+zeit(last||new Date())+'. Was du hier änderst, ist ein paar Sekunden später am PC – und umgekehrt.');if(lastTxt!=='ok')pillWeg();}
+      else if(s==='offline'){setText('Gerade kein Internet. Du kannst normal weiterarbeiten, der Abgleich holt alles nach.');pill('Offline – gleicht später ab','warn',true);}
+      else if(s==='warte'){setText('Warte auf die Daten vom PC. Bitte Kontor am PC einmal starten.');pill('Warte auf Daten vom PC','warn',true);}
+      else if(s==='verbinde'){setText('Verbinde …');}
+      else if(s==='fehler'){setText('Abgleich: '+(info||'Fehler'));pill('Abgleich: '+(info||'Fehler'),'bad',true);}
+      lastTxt=s;
+    }});
+  window.__ksync=ks;ks.start();
+}
+const iv=setInterval(()=>{if(window.__kontor&&window.__kontor.db){clearInterval(iv);start();}},150);
+})();
+
+</script>
 </body>
 </html>
