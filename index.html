@@ -418,6 +418,7 @@ details>summary{list-style:none}details>summary::-webkit-details-marker{display:
 .kb-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .kb-cards .kb-best{grid-column:1/-1;display:flex;align-items:baseline;justify-content:space-between}
 .kb-cards .kb-best b{font-size:1.18rem}
+.kb-cards .kb-best .kb-ue{margin-top:3px;color:var(--text-2)}
 .kb-note{padding:12px 14px;border-radius:14px;font-size:.88rem;line-height:1.35;background:var(--card);border:1px solid var(--line)}
 .kb-note.bad{border-color:var(--red);color:var(--bad)}
 .kb-note .amount-wrap{margin-top:8px}
@@ -1717,6 +1718,8 @@ function edSpeichern(){
 }
 
 /* ───────── Belege: Ausgaben & Kassenbuch ───────── */
+function kbKartenHtml(km){const ue=KB.bewegung((db.kassenbuch||{})[S.bym]||[]);
+  return `<div class="kb-cards" id="kbKarten"><div class="kb-best"><span><small>Kassenbestand Monatsende</small><small class="kb-ue">Überschuss im Monat ${ue>=0?'+':'−'}${eur(Math.abs(ue))}</small></span><b class="num${km.ende!=null&&km.ende<0?' amt-out':''}">${km.ende==null?'–':eur(km.ende)}</b></div><div><small>Einnahmen</small><b class="num amt-in">${eur(km.ein)}</b></div><div><small>Ausgaben</small><b class="num amt-out">${eur(km.aus)}</b></div><div><small>Zur Bank</small><b class="num">${eur(km.bankEin)}</b></div><div><small>Anfangsbestand</small><b class="num">${km.start==null?'–':eur(km.start)}</b></div></div>`;}
 function ausgabenImMonat(ym){return db.ausgaben.filter(a=>(a.datum||'').startsWith(ym)).sort((a,b)=>(b.datum||'').localeCompare(a.datum||''));}
 function thumbOf(a){if(a.beleg&&/^data:image\//.test(a.beleg))return `<span class="thumb"><img src="${a.beleg}" alt=""></span>`;if(a.beleg)return `<span class="thumb">${ic('file')}<em>PDF</em></span>`;return `<span class="thumb">${ic(a.fix?'clock':'receipt')}</span>`;}
 VIEWS.belege=()=>{
@@ -1734,7 +1737,7 @@ VIEWS.belege=()=>{
     const rows=(db.kassenbuch[S.bym]||[]).map((r,i)=>Object.assign({_i:i},r)).sort((a,b)=>(b.datum||'').localeCompare(a.datum||''));
     const km=KB.monat(db,S.bym);const anf=db.settings.kbAnfang;const zeigeAnf=km.start==null||(anf&&anf.monat===S.bym);
     const scans=db.kbScans.filter(s=>s.monat===S.bym);
-    body+=`<div class="kb-cards"><div class="kb-best"><small>Kassenbestand Monatsende</small><b class="num${km.ende!=null&&km.ende<0?' amt-out':''}">${km.ende==null?'–':eur(km.ende)}</b></div><div><small>Einnahmen</small><b class="num amt-in">${eur(km.ein)}</b></div><div><small>Ausgaben</small><b class="num amt-out">${eur(km.aus)}</b></div><div><small>Zur Bank</small><b class="num">${eur(km.bankEin)}</b></div><div><small>Anfangsbestand</small><b class="num">${km.start==null?'–':eur(km.start)}</b></div></div>
+    body+=`${kbKartenHtml(km)}
      ${zeigeAnf?`<div class="kb-note">${km.start==null?'Einmal eintragen: Wie viel Bargeld war am Anfang von '+ymName(S.bym)+' in der Kasse?':'Anfangsbestand '+ymName(S.bym)+' – die Monate danach rechnen von selbst weiter.'}<div class="amount-wrap sm"><input class="amount num" inputmode="decimal" placeholder="0,00" value="${anf&&anf.monat===S.bym?esc(inNum(anf.betrag,true)):''}" data-in="kbAnf" aria-label="Anfangsbestand"><span>€</span></div></div>`:''}
      ${km.neg.length?`<div class="kb-note bad">Achtung: Der Kassenbestand ist am ${km.neg.map(n=>fmtIso(n.datum)).join(', ')} unter 0 (${eur(km.neg[0].bestand)}). Ein Kassenbuch darf nie negativ sein.</div>`:''}
      <div class="two"><button class="btn btn-pri press" data-act="kbNeu">${ic('plus')}Eintrag</button><button class="btn btn-sec press" data-act="kbPaste">${ic('copy')}Einfügen</button><label class="btn btn-sec filebtn press">${ic('camera')}Scan<input type="file" accept="image/*,application/pdf" data-in="kbScan" aria-label="Kassenbuch-Seite scannen"></label></div>
@@ -2215,7 +2218,9 @@ const INP={
   kbiTa:v=>{if(KBI)KBI.paste=v;},
   kbi:(v,el)=>{const z=KBI&&KBI.zeilen[+el.dataset.i];if(!z)return;z[el.dataset.k]=v;if(el.dataset.k==='_b')z.betrag=num(v);z.unsicher=false;
     const card=el.closest('.kbi-z');if(card)card.classList.remove('gelb');kbiPruefeDup(z);const s=$('#kbiSum');if(s){const t=document.createElement('div');t.innerHTML=kbiSummen();s.replaceWith(t.firstChild);}},
-  kbAnf:v=>{const t=String(v).trim();if(!t){if(db.settings.kbAnfang&&db.settings.kbAnfang.monat===S.bym)delete db.settings.kbAnfang;}else db.settings.kbAnfang={monat:S.bym,betrag:num(t)};persist();},
+  kbAnf:(v,el)=>{const t=String(v).trim();if(!t){if(db.settings.kbAnfang&&db.settings.kbAnfang.monat===S.bym)delete db.settings.kbAnfang;}else db.settings.kbAnfang={monat:S.bym,betrag:num(t)};persist();
+    const k=$('#kbKarten');if(k){const d=document.createElement('div');d.innerHTML=kbKartenHtml(KB.monat(db,S.bym));k.replaceWith(d.firstChild);} // sofort neu rechnen, Tastatur bleibt offen
+    if(!el._kbBlur){el._kbBlur=1;el.addEventListener('blur',()=>setTimeout(refresh,50),{once:true});}},
   rq:v=>{S.rq=v;const s=$('#scr-rechnungen');const l=s.querySelector('#rlist');const tmp=document.createElement('div');tmp.innerHTML=VIEWS.rechnungen().body;l.innerHTML=tmp.querySelector('#rlist').innerHTML;},
   kq:v=>{S.kq=v;const t=top();const inp=t.querySelector('[data-in="kq"]');const pos=inp.selectionStart;paint(t);const n=t.querySelector('[data-in="kq"]');n.focus();try{n.setSelectionRange(pos,pos);}catch(e){}},
   sf:(v,el)=>{SF[el.dataset.k]=v;if(el.dataset.k==='_n'){const c=$('#sfCalc');if(c)c.innerHTML=sfCalc();}},
