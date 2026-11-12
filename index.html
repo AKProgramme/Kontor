@@ -424,6 +424,7 @@ details>summary{list-style:none}details>summary::-webkit-details-marker{display:
 .kb-note .amount-wrap{margin-top:8px}
 .row.storno b,.row.storno small{text-decoration:line-through;opacity:.55}
 .amt-bank{color:var(--text-2)}
+.tb em.ruhig{background:#2B3A6E;color:#fff}
 .kbi-sum{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .kbi-sum>div{padding:10px 12px;border-radius:14px;background:var(--card);border:1px solid var(--line);min-width:0}
 .kbi-sum small{display:block;font-size:.706rem;color:var(--text-3)}.kbi-sum b{display:block;font-size:.95rem;white-space:nowrap}
@@ -1317,8 +1318,8 @@ function sumBox(t,inv){
 const S={tab:'home',stack:[],rq:'',rf:'alle',bseg:'ausgaben',bym:ymNow(),kq:'',bmon:ymNow(),bjahr:String(new Date().getFullYear()),bseg2:'monat',pkat:''};
 const TABS=[['home','Übersicht','homeF'],['rechnungen','Rechnungen','docF'],['belege','Belege','receiptF'],['mehr','Mehr','gridF']];
 function renderTabbar(){
-  const ueber=db.invoices.filter(istUeberfaellig).length;
-  $('#tabbar').innerHTML=TABS.map(t=>`<button class="tb${S.tab===t[0]?' on':''}" data-act="tab" data-t="${t[0]}" aria-current="${S.tab===t[0]?'page':'false'}"${t[0]==='rechnungen'&&ueber?` aria-label="Rechnungen, ${ueber} überfällig"`:''}>${ic(t[2],'fill')}<span>${t[1]}</span>${t[0]==='rechnungen'&&ueber?`<em aria-hidden="true">${ueber}</em>`:''}</button>`).join('');
+  const ueber=db.invoices.filter(istUeberfaellig).length;const offen=db.invoices.filter(i=>(i.status||'offen')==='offen').length;
+  $('#tabbar').innerHTML=TABS.map(t=>`<button class="tb${S.tab===t[0]?' on':''}" data-act="tab" data-t="${t[0]}" aria-current="${S.tab===t[0]?'page':'false'}"${t[0]==='rechnungen'&&offen?` aria-label="Rechnungen, ${offen} offen${ueber?', '+ueber+' überfällig':''}"`:''}>${ic(t[2],'fill')}<span>${t[1]}</span>${t[0]==='rechnungen'&&offen?`<em class="${ueber?'':'ruhig'}" aria-hidden="true">${offen}</em>`:''}</button>`).join('');
 }
 const plusBtn=()=>`<button class="nav-plus press" data-act="plus" aria-label="Neu">${ic('plus')}</button>`;
 function screenShell(scr){
