@@ -646,7 +646,7 @@ body{position:fixed;top:0;left:0;right:0;bottom:auto;width:100%;height:var(--app
 </script>
 <script>(function(){function h(){document.documentElement.style.setProperty('--app-h',window.innerHeight+'px');}
 h();addEventListener('resize',h);addEventListener('orientationchange',function(){setTimeout(h,300);});addEventListener('pageshow',h);})();</script>
-<!-- Version 6 -->
+<!-- Version 7 -->
 </head>
 <body>
 <div class="stage">
@@ -2327,6 +2327,46 @@ start();
 
 </script>
 
+
+<style>
+/* Version 7 – Feinschliff nach Apple-Regeln: Flächen sichtbar, zusammengehörige Zahlen in einer Karte */
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--chip:#E2E6F0;--fill:rgba(92,101,132,.13)}}
+:root[data-theme="light"]{--chip:#E2E6F0;--fill:rgba(92,101,132,.13)}
+:root{--fill:rgba(149,155,179,.18)}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--fill:rgba(92,101,132,.13)}}
+/* Umschalter (Ausgaben | Kassenbuch, Monat | Jahr, Filter): sichtbare Spur, gewählter Teil hebt sich ab */
+.seg{background:var(--fill);padding:3px;border-radius:12px}
+.seg button{color:var(--text-2);font-weight:500}
+.seg button.on{background:var(--card);color:var(--text);font-weight:600;box-shadow:0 1px 3px rgba(14,21,48,.16),0 0 0 .5px rgba(14,21,48,.06)}
+:root:not([data-theme="light"]) .seg button.on{background:var(--raised)}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]) .seg button.on{background:#fff}}
+/* Suchfelder sichtbar */
+.search{background:var(--fill)}
+/* Monate: ohne Rahmen, gewählter Monat klar gefüllt */
+.hchip{border:0;background:var(--fill);color:var(--text-2);font-weight:500}
+.hchip.on{background:var(--text);color:var(--bg);font-weight:600}
+.hchip.on b{color:inherit}
+/* Kassenbuch: alle Zahlen in einer Karte mit Trennlinien */
+.kb-cards{gap:0;background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--card-shadow)}
+.kb-cards>div{border:0;border-radius:0;background:none;padding:12px 16px;box-shadow:none}
+.kb-cards>div:not(:first-child){border-top:1px solid var(--row-line)}
+.kb-cards>div:nth-child(odd):not(:first-child){border-left:1px solid var(--row-line)}
+.kb-cards .kb-best{padding:16px}
+.kb-cards small{font-size:.765rem}
+.kb-cards b{font-size:1rem}
+.kb-cards .kb-best b{font-size:1.294rem;font-weight:700}
+/* Berichte: die vier Zahlen in einer Karte statt vier loser Kästchen */
+.st-grid:has(>.card.kin.pad){gap:0;grid-template-columns:repeat(2,minmax(0,1fr));background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--card-shadow)}
+.st-grid>.card.kin.pad{border:0;border-radius:0;box-shadow:none;background:none;padding:14px 16px;gap:4px}
+.st-grid>.card.kin.pad::before{display:none}
+.st-grid>.card.kin.pad:nth-child(n+3){border-top:1px solid var(--row-line)}
+.st-grid>.card.kin.pad:nth-child(even){border-left:1px solid var(--row-line)}
+/* Abgleich-Hinweis oben: nichts überdecken */
+.kv-row b.num{white-space:nowrap;flex-shrink:0}
+.kv-row span{min-width:0}
+body.pill-on .nav-r .tag{display:none}
+body.pill-on .screen .nav-t{opacity:0!important}
+</style>
 <style>
 .ks-pill{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 8px);z-index:90;transform:translate(-50%,-12px);opacity:0;pointer-events:none;
   transition:opacity .25s,transform .3s cubic-bezier(.32,.72,0,1);padding:7px 14px;border-radius:999px;font:600 13px/1.2 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
@@ -2731,10 +2771,10 @@ let ks=null,lastTxt='',pillT=null,waitRefresh=false;
 function pill(txt,art,bleibt,klick){
   let p=document.getElementById('ksPill');
   if(!p){p=document.createElement('div');p.id='ksPill';document.body.appendChild(p);p.addEventListener('click',()=>{if(p.classList.contains('klick'))loginZeigen();});}
-  p.className='ks-pill'+(art?' '+art:'')+(klick?' klick':'');p.textContent=txt;p.classList.add('show');
+  p.className='ks-pill'+(art?' '+art:'')+(klick?' klick':'');p.textContent=txt;p.classList.add('show');document.body.classList.toggle('pill-on',!!bleibt);
   clearTimeout(pillT);if(!bleibt)pillT=setTimeout(()=>p.classList.remove('show'),2200);
 }
-function pillWeg(){const p=document.getElementById('ksPill');if(p)p.classList.remove('show');}
+function pillWeg(){const p=document.getElementById('ksPill');if(p)p.classList.remove('show');document.body.classList.remove('pill-on');}
 function sicher(){ // nicht neu zeichnen, während getippt wird oder ein Fenster offen ist
   const k=K();const ae=document.activeElement;
   if(k.SH)return false;
