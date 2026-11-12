@@ -1741,7 +1741,7 @@ VIEWS.belege=()=>{
      ${zeigeAnf?`<div class="kb-note">${km.start==null?'Einmal eintragen: Wie viel Bargeld war am Anfang von '+ymName(S.bym)+' in der Kasse?':'Anfangsbestand '+ymName(S.bym)+' – die Monate danach rechnen von selbst weiter.'}<div class="amount-wrap sm"><input class="amount num" inputmode="decimal" placeholder="0,00" value="${anf&&anf.monat===S.bym?esc(inNum(anf.betrag,true)):''}" data-in="kbAnf" aria-label="Anfangsbestand"><span>€</span></div></div>`:''}
      ${km.neg.length?`<div class="kb-note bad">Achtung: Der Kassenbestand ist am ${km.neg.map(n=>fmtIso(n.datum)).join(', ')} unter 0 (${eur(km.neg[0].bestand)}). Ein Kassenbuch darf nie negativ sein.</div>`:''}
      <div class="two"><button class="btn btn-pri press" data-act="kbNeu">${ic('plus')}Eintrag</button><button class="btn btn-sec press" data-act="kbPaste">${ic('copy')}Einfügen</button><label class="btn btn-sec filebtn press">${ic('camera')}Scan<input type="file" accept="image/*,application/pdf" data-in="kbScan" aria-label="Kassenbuch-Seite scannen"></label></div>
-     <section><div class="sec-h"><h2>${ymName(S.bym)}</h2><span class="t3">${rows.length} Einträge</span></div>${rows.length?`<div class="list">${rows.map(r=>{const bank=KB.istBank(r),plus=r.typ==='einnahme'||r.typ==='bank_ab';return swipeRow(`<button class="row press${r.storno?' storno':''}" data-act="kb" data-i="${r._i}"><span class="row-ic" style="color:${bank?'var(--text-2)':plus?'var(--ok)':'var(--bad)'}">${ic(bank?'sync':plus?'plus':'minus')}</span><span class="row-main"><b>${esc(r.desc||KB.ARTEN[r.typ]||'–')}</b><small>${fmtIso(r.datum)}${r.nr?' · Nr. '+esc(r.nr):''} · ${r.storno?'storniert':bank?KB.ARTEN[r.typ]:KB.satz(r)+' % MwSt.'}</small></span><b class="num ${bank?'amt-bank':plus?'amt-in':'amt-out'}">${plus?'':'− '}${eur(parseFloat(r.betrag)||0)}</b></button>`,[`<button class="${r.storno?'sw-ok':'sw-del'}" data-act="kfDelI" data-i="${r._i}">${ic(r.storno?'undo':'ban')}${r.storno?'Aufheben':'Stornieren'}</button>`]);}).join('')}</div>`:leer('Noch keine Einträge in diesem Monat.',`<button class="btn btn-sec press" data-act="kbNeu">${ic('plus')}Eintrag hinzufügen</button>`)}</section>
+     <section><div class="sec-h"><h2>${ymName(S.bym)}</h2><span class="t3">${rows.length} Einträge</span></div>${rows.length?`<div class="list">${rows.map(r=>{const bank=KB.istBank(r),plus=r.typ==='einnahme'||r.typ==='bank_ab';return swipeRow(`<button class="row press${r.storno?' storno':''}" data-act="kb" data-i="${r._i}"><span class="row-ic" style="color:${bank?'var(--text-2)':plus?'var(--ok)':'var(--bad)'}">${ic(bank?'sync':plus?'plus':'minus')}</span><span class="row-main"><b>${esc(r.desc||KB.ARTEN[r.typ]||'–')}</b><small>${fmtIso(r.datum)}${r.nr?' · Nr. '+esc(r.nr):''} · ${r.storno?'storniert':bank?KB.ARTEN[r.typ]:KB.satz(r)+' % MwSt.'}</small></span><b class="num ${bank?'amt-bank':plus?'amt-in':'amt-out'}">${plus?'':'− '}${eur(parseFloat(r.betrag)||0)}</b></button>`,[`<button class="sw-del" data-act="kfDelI" data-i="${r._i}">${ic('trash')}Löschen</button>`]);}).join('')}</div>`:leer('Noch keine Einträge in diesem Monat.',`<button class="btn btn-sec press" data-act="kbNeu">${ic('plus')}Eintrag hinzufügen</button>`)}</section>
      ${scans.length?`<section><div class="sec-h"><h2>Scans</h2><span class="t3">${scans.length}</span></div><div class="list">${scans.map(s=>`<button class="row press" data-act="kbScanOpen" data-id="${s.id}">${/^data:image\//.test(s.data)?`<span class="thumb"><img src="${s.data}" alt=""></span>`:`<span class="thumb">${ic('file')}<em>PDF</em></span>`}<span class="row-main"><b>${esc(s.name||'Scan')}</b><small>${fmtIso(s.datum)}${s.notiz?' · '+esc(s.notiz):''}</small></span>${ic('chev','chev')}</button>`).join('')}</div></section>`:''}`;
   }
   return{title:'Belege',body};
@@ -1921,7 +1921,7 @@ function kbSheet(i){
     ${KF.typ==='ausgabe'?`<div class="field"><label>MwSt. im Betrag</label><div class="seg">${[19,7,0].map(v=>`<button class="${KF.mwst===v?'on':''}" data-act="kfMwst" data-v="${v}">${v} %</button>`).join('')}</div></div>`:(KB.istBank(KF)?'':'<p class="small t3">Kasse: Betrag brutto, enthält 19 % MwSt.</p>')}
     <div class="field"><label>Beschreibung</label><input class="inp" value="${esc(KF.desc)}" placeholder="z. B. Barverkauf Theke" data-in="kf" data-k="desc"></div>
     <div class="grid2"><div class="field"><label>Datum</label><input class="inp" type="date" value="${esc(KF.datum)}" data-in="kf" data-k="datum"></div><div class="field"><label>Beleg-Nr.</label><input class="inp" inputmode="numeric" value="${esc(KF.nr)}" placeholder="–" data-in="kf" data-k="nr"></div></div>
-    ${i!=null?`<button class="btn-text danger press" data-act="kfDel">${ic(KF.storno?'undo':'ban')}${KF.storno?'Storno aufheben':'Eintrag stornieren'}</button>`:''}`})});
+    ${i!=null?`<button class="btn-text danger press" data-act="kfDel">${ic('trash')}Eintrag löschen</button>`:''}`})});
 }
 function kfSpeichern(){
   const b=num(KF._b);if(!(b>0)&&!String(KF.desc).trim()){feldFehler($('#kfB'),'Bitte einen Betrag eintragen, z. B. 12,50.');return;}
@@ -2085,11 +2085,9 @@ function ausgabeLoeschen(id){
   const a=db[arr].find(x=>x.id===id),idx=db[arr].indexOf(a);db[arr]=db[arr].filter(x=>x.id!==id);persist();refresh();
   undoToast((a.fix?'Fixkosten':'Ausgabe')+' gelöscht',()=>{if(!db[arr].some(x=>x.id===id))db[arr].splice(Math.min(idx,db[arr].length),0,a);});
 }
-function kbLoeschen(ym,i){ // Kassenbuch: stornieren statt löschen (Eintrag bleibt durchgestrichen sichtbar)
-  const arr=db.kassenbuch[ym]||[];const z=arr[i];if(!z)return;
-  if(z.storno){delete z.storno;persist();refresh();toast('Storno aufgehoben');return;}
-  z.storno=true;persist();refresh();
-  undoToast('Eintrag storniert',()=>{delete z.storno;});
+function kbLoeschen(ym,i){
+  const arr=db.kassenbuch[ym]||[];const z=arr[i];if(!z)return;arr.splice(i,1);if(arr.length)db.kassenbuch[ym]=arr;else delete db.kassenbuch[ym];persist();refresh();
+  undoToast('Eintrag gelöscht',()=>{const a=db.kassenbuch[ym]=db.kassenbuch[ym]||[];if(!a.includes(z))a.splice(Math.min(i,a.length),0,z);});
 }
 const A={
   kbPaste:()=>kbPaste(),
