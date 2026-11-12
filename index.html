@@ -423,6 +423,25 @@ details>summary{list-style:none}details>summary::-webkit-details-marker{display:
 .kb-note .amount-wrap{margin-top:8px}
 .row.storno b,.row.storno small{text-decoration:line-through;opacity:.55}
 .amt-bank{color:var(--text-2)}
+.kbi-sum{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.kbi-sum>div{padding:10px 12px;border-radius:14px;background:var(--card);border:1px solid var(--line);min-width:0}
+.kbi-sum small{display:block;font-size:.706rem;color:var(--text-3)}.kbi-sum b{display:block;font-size:.95rem;white-space:nowrap}
+.kbi-sum .ganz{grid-column:1/-1}
+.kbi-list{display:flex;flex-direction:column;gap:8px}
+.kbi-z{border-radius:14px;background:var(--card);border:1px solid var(--line);overflow:hidden}
+.kbi-z.gelb{border-color:#d9a400;background:rgba(255,200,0,.10)}
+.kbi-z.grau{opacity:.5}
+.kbi-kopf{display:flex;align-items:center;gap:10px;padding:10px 12px;min-height:56px}
+.kbi-chk{width:30px;height:30px;min-width:30px;border-radius:50%;border:2px solid var(--line-2,#c3c8d6);display:flex;align-items:center;justify-content:center;background:transparent;color:#fff;padding:0}
+.kbi-chk.an{background:var(--accent,#E0338C);border-color:transparent}
+.kbi-chk .ic{width:18px;height:18px}
+.kbi-main{flex:1;min-width:0;text-align:left;background:transparent;border:0;color:inherit;padding:0;font:inherit}
+.kbi-main b{display:block;font-size:.94rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kbi-main small{display:block;font-size:.76rem;color:var(--text-3)}
+.kbi-main em{display:block;font-style:normal;font-size:.76rem;color:#a87800;margin-top:2px}
+.kbi-edit{padding:4px 12px 12px;display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--line)}
+.kbi-err{padding:12px 14px;border-radius:14px;border:1px solid var(--red);color:var(--bad);font-size:.88rem;line-height:1.35}
+.kbi-ta{width:100%;min-height:180px;font:13px/1.35 ui-monospace,Menlo,monospace;padding:12px;border-radius:14px;border:1px solid var(--line);background:var(--input,transparent);color:inherit}
 .kb-cards>div{padding:12px;border-radius:14px;background:var(--card);border:1px solid var(--line);min-width:0}
 .kb-cards small{display:block;font-size:.706rem;color:var(--text-3)}
 .kb-cards b{display:block;font-size:.882rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -542,6 +561,7 @@ body{position:fixed;top:0;left:0;right:0;bottom:auto;width:100%;height:var(--app
     while (m < ym && n++ < 600) { const rows = (override && override[m]) || (db.kassenbuch || {})[m] || []; b = r2(b + bewegung(rows)); m = nachMonat(m); }
     return r2(b);
   }
+  function monat_(db, ym, rows) { return monat(db, ym, rows); }
   function monat(db, ym, rows) {
     rows = rows || (db.kassenbuch || {})[ym] || [];
     const ov = {}; ov[ym] = rows;
@@ -570,9 +590,55 @@ body{position:fixed;top:0;left:0;right:0;bottom:auto;width:100%;height:var(--app
     if (spalte === 'ausgaben' || /^ausg|ausgabe/.test(t)) return 'ausgabe';
     return 'einnahme';
   }
-  function gleich(a, b) { return (a.datum || '') === (b.datum || '') && String(a.nr || '').trim() === String(b.nr || '').trim() && Math.abs(zahl(a.betrag) - zahl(b.betrag)) < 0.005; }
+  // gleicher Eintrag: gleiches Datum, Beleg-Nr., Betrag und (wenn bei beiden angegeben) gleiche Art; stornierte zählen nicht
+  function gleich(a, b) { return !a.storno && (a.datum || '') === (b.datum || '') && String(a.nr || '').trim() === String(b.nr || '').trim() && Math.abs(zahl(a.betrag) - zahl(b.betrag)) < 0.005 && (!a.typ || !b.typ || a.typ === b.typ); }
+
+  // ── Block aus dem Lese-Chat: „KONTOR-KASSENBUCH v1“ + JSON ──
+  const ART_BLOCK = { einnahme: 'einnahme', ausgabe: 'ausgabe', bankeinzahlung: 'bank_ein', bankabhebung: 'bank_ab' };
+  const MONATE = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+  const monatName = ym => MONATE[+ym.slice(5, 7) - 1] + ' ' + ym.slice(0, 4);
+  function echtesDatum(d) { if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false; const x = new Date(d + 'T12:00:00Z'); return !isNaN(x) && x.toISOString().slice(0, 10) === d; }
+  function leseBlock(text) {
+    let t = String(text == null ? '' : text).replace(/\r/g, '').replace(/^\uFEFF/, '').replace(/\u00a0/g, ' ');
+    t = t.replace(/^\s*```[a-zA-Z]*\s*$/gm, '').trim();
+    if (!t) return { ok: false, fehler: 'Die Zwischenablage ist leer. Bitte im Lese-Chat den Block kopieren und nochmal „Einfügen“ tippen.' };
+    const zeilen = t.split('\n'); const erste = zeilen[0].trim();
+    if (!/^KONTOR-KASSENBUCH\b/i.test(erste)) return { ok: false, fehler: 'Das ist kein Kassenbuch-Block aus dem Lese-Chat. Die erste Zeile muss „KONTOR-KASSENBUCH v1“ heißen. Es wurde nichts eingetragen.' };
+    if (!/^KONTOR-KASSENBUCH\s+v1$/i.test(erste)) return { ok: false, fehler: 'Dieser Block hat eine andere Version („' + erste + '“). Kontor kennt nur „KONTOR-KASSENBUCH v1“. Es wurde nichts eingetragen.' };
+    let json = zeilen.slice(1).join('\n').trim(), d = null;
+    try { d = JSON.parse(json); } catch (e) {
+      try { d = JSON.parse(json.replace(/[\u201c\u201d\u201e\u2033]/g, '"')); } catch (e2) { // typografische Anführungszeichen vom Handy
+        return { ok: false, fehler: 'Der Block ist kaputt oder nicht vollständig kopiert. Bitte im Lese-Chat den ganzen Block nochmal kopieren. Es wurde nichts eingetragen.' };
+      }
+    }
+    if (!d || typeof d !== 'object') return { ok: false, fehler: 'Der Block ist leer oder kaputt. Es wurde nichts eingetragen.' };
+    const monat = String(d.monat || '');
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(monat)) return { ok: false, fehler: 'Im Block fehlt der Monat oder er ist falsch (so muss es sein: "monat":"2026-10"). Es wurde nichts eingetragen.' };
+    if (!Array.isArray(d.eintraege) || !d.eintraege.length) return { ok: false, fehler: 'Im Block stehen keine Einträge. Es wurde nichts eingetragen.' };
+    const fehler = [], out = [];
+    d.eintraege.forEach((e, i) => {
+      const n = 'Eintrag ' + (i + 1);
+      if (!e || typeof e !== 'object') { fehler.push(n + ' ist leer.'); return; }
+      const datum = String(e.datum || '').trim(); const art = String(e.art || '').trim().toLowerCase();
+      const betrag = typeof e.betrag === 'number' ? e.betrag : parseFloat(String(e.betrag == null ? '' : e.betrag).replace(/\s|€/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.'));
+      if (!echtesDatum(datum)) fehler.push(n + ': Das Datum fehlt oder ist falsch („' + datum + '“).');
+      if (!ART_BLOCK[art]) fehler.push(n + ': Die Art „' + (e.art || '') + '“ kenne ich nicht (erlaubt: einnahme, ausgabe, bankeinzahlung, bankabhebung).');
+      if (!(betrag > 0) || !isFinite(betrag)) fehler.push(n + ': Der Betrag fehlt oder ist keine Zahl.');
+      let hinweis = String(e.hinweis || '').trim(); let unsicher = e.unsicher === true || e.unsicher === 'true';
+      if (echtesDatum(datum) && datum.slice(0, 7) !== monat) { unsicher = true; hinweis = (hinweis ? hinweis + ' · ' : '') + 'Datum liegt nicht im ' + monatName(monat); }
+      out.push({ datum, nr: String(e.beleg == null ? '' : e.beleg).trim(), typ: ART_BLOCK[art] || 'einnahme', desc: String(e.text || '').trim(), betrag: Math.round(betrag * 100) / 100, unsicher, hinweis });
+    });
+    if (fehler.length) return { ok: false, fehler: 'Der Block hat Fehler, es wurde nichts eingetragen: ' + fehler.slice(0, 3).join(' ') + (fehler.length > 3 ? ' (und ' + (fehler.length - 3) + ' weitere)' : '') };
+    return { ok: true, monat, zeilen: out };
+  }
+  // Summen einer Vorschau: ausgewählte neue Zeilen + Kassenbestand danach (pro Zielmonat = Monat des Blocks)
+  function vorschau(db, monat, neu) {
+    const rows = ((db.kassenbuch || {})[monat] || []).concat(neu.filter(z => (z.datum || '').slice(0, 7) === monat || !z.datum));
+    const m = monat_(db, monat, rows);
+    return { ein: summe(neu, 'einnahme'), aus: summe(neu, 'ausgabe'), bankEin: summe(neu, 'bank_ein'), bankAb: summe(neu, 'bank_ab'), ende: m.ende, start: m.start, neg: m.neg };
+  }
   function duplikat(rows, z) { return (rows || []).some(r => gleich(r, z)); }
-  root.KB = { ARTEN, WAHL, zahl, gilt, istBank, summe, satz, vorMonat, nachMonat, bewegung, anfang, monat, naechsteNr, artVorschlag, duplikat, gleich };
+  root.KB = { leseBlock, vorschau, monatName, ARTEN, WAHL, zahl, gilt, istBank, summe, satz, vorMonat, nachMonat, bewegung, anfang, monat, naechsteNr, artVorschlag, duplikat, gleich };
 })(typeof window !== 'undefined' ? window : globalThis);
 
 </script>
@@ -1671,7 +1737,7 @@ VIEWS.belege=()=>{
     body+=`<div class="kb-cards"><div class="kb-best"><small>Kassenbestand Monatsende</small><b class="num${km.ende!=null&&km.ende<0?' amt-out':''}">${km.ende==null?'–':eur(km.ende)}</b></div><div><small>Einnahmen</small><b class="num amt-in">${eur(km.ein)}</b></div><div><small>Ausgaben</small><b class="num amt-out">${eur(km.aus)}</b></div><div><small>Zur Bank</small><b class="num">${eur(km.bankEin)}</b></div><div><small>Anfangsbestand</small><b class="num">${km.start==null?'–':eur(km.start)}</b></div></div>
      ${zeigeAnf?`<div class="kb-note">${km.start==null?'Einmal eintragen: Wie viel Bargeld war am Anfang von '+ymName(S.bym)+' in der Kasse?':'Anfangsbestand '+ymName(S.bym)+' – die Monate danach rechnen von selbst weiter.'}<div class="amount-wrap sm"><input class="amount num" inputmode="decimal" placeholder="0,00" value="${anf&&anf.monat===S.bym?esc(inNum(anf.betrag,true)):''}" data-in="kbAnf" aria-label="Anfangsbestand"><span>€</span></div></div>`:''}
      ${km.neg.length?`<div class="kb-note bad">Achtung: Der Kassenbestand ist am ${km.neg.map(n=>fmtIso(n.datum)).join(', ')} unter 0 (${eur(km.neg[0].bestand)}). Ein Kassenbuch darf nie negativ sein.</div>`:''}
-     <div class="two"><button class="btn btn-pri press" data-act="kbNeu">${ic('plus')}Eintrag</button><label class="btn btn-sec filebtn press">${ic('camera')}Scan<input type="file" accept="image/*,application/pdf" data-in="kbScan" aria-label="Kassenbuch-Seite scannen"></label></div>
+     <div class="two"><button class="btn btn-pri press" data-act="kbNeu">${ic('plus')}Eintrag</button><button class="btn btn-sec press" data-act="kbPaste">${ic('copy')}Einfügen</button><label class="btn btn-sec filebtn press">${ic('camera')}Scan<input type="file" accept="image/*,application/pdf" data-in="kbScan" aria-label="Kassenbuch-Seite scannen"></label></div>
      <section><div class="sec-h"><h2>${ymName(S.bym)}</h2><span class="t3">${rows.length} Einträge</span></div>${rows.length?`<div class="list">${rows.map(r=>{const bank=KB.istBank(r),plus=r.typ==='einnahme'||r.typ==='bank_ab';return swipeRow(`<button class="row press${r.storno?' storno':''}" data-act="kb" data-i="${r._i}"><span class="row-ic" style="color:${bank?'var(--text-2)':plus?'var(--ok)':'var(--bad)'}">${ic(bank?'sync':plus?'plus':'minus')}</span><span class="row-main"><b>${esc(r.desc||KB.ARTEN[r.typ]||'–')}</b><small>${fmtIso(r.datum)}${r.nr?' · Nr. '+esc(r.nr):''} · ${r.storno?'storniert':bank?KB.ARTEN[r.typ]:KB.satz(r)+' % MwSt.'}</small></span><b class="num ${bank?'amt-bank':plus?'amt-in':'amt-out'}">${plus?'':'− '}${eur(parseFloat(r.betrag)||0)}</b></button>`,[`<button class="${r.storno?'sw-ok':'sw-del'}" data-act="kfDelI" data-i="${r._i}">${ic(r.storno?'undo':'ban')}${r.storno?'Aufheben':'Stornieren'}</button>`]);}).join('')}</div>`:leer('Noch keine Einträge in diesem Monat.',`<button class="btn btn-sec press" data-act="kbNeu">${ic('plus')}Eintrag hinzufügen</button>`)}</section>
      ${scans.length?`<section><div class="sec-h"><h2>Scans</h2><span class="t3">${scans.length}</span></div><div class="list">${scans.map(s=>`<button class="row press" data-act="kbScanOpen" data-id="${s.id}">${/^data:image\//.test(s.data)?`<span class="thumb"><img src="${s.data}" alt=""></span>`:`<span class="thumb">${ic('file')}<em>PDF</em></span>`}<span class="row-main"><b>${esc(s.name||'Scan')}</b><small>${fmtIso(s.datum)}${s.notiz?' · '+esc(s.notiz):''}</small></span>${ic('chev','chev')}</button>`).join('')}</div></section>`:''}`;
   }
@@ -1783,6 +1849,65 @@ async function aiLesen(){
 }
 /* Kassenbuch-Eintrag */
 let KF=null;
+/* ───────── Kassenbuch: Block aus dem Lese-Chat einfügen ───────── */
+let KBI=null;
+async function kbPaste(){
+  let t='';try{if(navigator.clipboard&&navigator.clipboard.readText)t=await navigator.clipboard.readText();}catch(e){t='';}
+  if((t||'').trim())return kbBlock(t); // falscher Text → klare Meldung
+  kbPasteSheet('','');
+}
+function kbPasteSheet(text,fehler){
+  KBI={paste:text||'',fehler:fehler||''};
+  sheetFrom({title:'Block einfügen',tall:true,done:{act:'kbiPruefen',label:'Prüfen'},render:()=>({body:`
+    <p class="small t3" style="margin:0">Im Lese-Chat den Block kopieren. Dann hier ins Feld tippen, gedrückt halten und „Einfügen“ wählen.</p>
+    ${KBI.fehler?`<div class="kbi-err">${esc(KBI.fehler)}</div>`:''}
+    <textarea class="kbi-ta" id="kbiTa" data-in="kbiTa" placeholder="KONTOR-KASSENBUCH v1" autocapitalize="off" autocorrect="off" spellcheck="false">${esc(KBI.paste)}</textarea>`,
+    after:sh=>{const ta=sh.querySelector('#kbiTa');if(ta&&!KBI.paste)setTimeout(()=>ta.focus(),250);}})});
+}
+async function kbBlock(t){
+  const r=KB.leseBlock(t);
+  if(!r.ok){if(SH)closeSheet();setTimeout(()=>kbPasteSheet(t,r.fehler),SH?0:10);return;}
+  if(r.monat!==S.bym){
+    if(SH)closeSheet();
+    const v=await ask({title:'Anderer Monat',text:`Der Block ist für ${KB.monatName(r.monat)}. Offen ist gerade ${KB.monatName(S.bym)}.`,buttons:[{label:'In '+KB.monatName(r.monat)+' eintragen',value:'ja',cls:'btn-pri'},{label:'Abbrechen',value:null}]});
+    if(v!=='ja')return;
+    S.bym=r.monat;refresh();
+  }
+  KBI={monat:r.monat,offen:null,zeilen:r.zeilen.map(z=>{const d=KB.duplikat(db.kassenbuch[(z.datum||'').slice(0,7)||r.monat]||[],z);return Object.assign({},z,{dup:d,an:!d,_b:inNum(z.betrag,true)});})};
+  if(SH)closeSheet();
+  setTimeout(()=>sheetFrom({title:'Einfügen prüfen',tall:true,done:{act:'kbiOk',label:'Übernehmen'},dirty:()=>!!KBI&&!!KBI.zeilen,render:kbiRender}),SH?0:10);
+}
+function kbiSummen(){
+  const an=KBI.zeilen.filter(z=>z.an&&!z.dup);const v=KB.vorschau(db,KBI.monat,an);
+  return `<div class="kbi-sum" id="kbiSum"><div><small>Einnahmen</small><b class="num amt-in">${eur(v.ein)}</b></div><div><small>Ausgaben</small><b class="num amt-out">${eur(v.aus)}</b></div><div><small>Zur Bank</small><b class="num">${eur(v.bankEin-v.bankAb)}</b></div><div><small>Ausgewählt</small><b>${an.length} von ${KBI.zeilen.length}</b></div>
+    <div class="ganz"><small>Kassenbestand danach (${esc(KB.monatName(KBI.monat))})</small><b class="num${v.ende!=null&&v.ende<0?' amt-out':''}">${v.ende==null?'– Anfangsbestand fehlt':eur(v.ende)}</b></div></div>`;
+}
+function kbiRender(){
+  const z0=KBI.zeilen;
+  return{body:`${kbiSummen()}
+   <p class="small t3" style="margin:0">Gelb = unsicher, bitte prüfen. Grau = schon im Kassenbuch. Zeile antippen zum Ändern.</p>
+   <div class="kbi-list">${z0.map((z,i)=>{const bank=KB.istBank(z),plus=z.typ==='einnahme'||z.typ==='bank_ab';
+     return `<div class="kbi-z${z.dup?' grau':z.unsicher?' gelb':''}"><div class="kbi-kopf">
+       <button class="kbi-chk${z.an&&!z.dup?' an':''}" data-act="kbiAn" data-i="${i}" ${z.dup?'disabled':''} aria-label="Übernehmen an/aus">${z.an&&!z.dup?ic('check'):''}</button>
+       <button class="kbi-main press" data-act="kbiEdit" data-i="${i}"><b>${esc(z.desc||KB.ARTEN[z.typ])}</b><small>${fmtIso(z.datum)}${z.nr?' · Nr. '+esc(z.nr):''} · ${KB.ARTEN[z.typ]}</small>${z.dup?'<em style="color:var(--text-3)">Schon im Kassenbuch – wird nicht doppelt übernommen</em>':z.hinweis?`<em>${esc(z.hinweis)}</em>`:''}</button>
+       <b class="num ${bank?'amt-bank':plus?'amt-in':'amt-out'}">${plus?'':'− '}${eur(z.betrag)}</b></div>
+       ${KBI.offen===i?`<div class="kbi-edit">
+         <div class="seg">${KB.WAHL.concat(KB.WAHL.includes(z.typ)?[]:[z.typ]).map(t=>`<button class="${z.typ===t?'on':''}" data-act="kbiTyp" data-i="${i}" data-v="${t}">${t==='bank_ein'?'Zur Bank':KB.ARTEN[t]}</button>`).join('')}</div>
+         <div class="field"><label>Betrag</label><div class="amount-wrap sm"><input class="amount num" inputmode="decimal" value="${esc(z._b)}" data-in="kbi" data-i="${i}" data-k="_b"><span>€</span></div></div>
+         <div class="field"><label>Text</label><input class="inp" value="${esc(z.desc)}" data-in="kbi" data-i="${i}" data-k="desc"></div>
+         <div class="grid2"><div class="field"><label>Datum</label><input class="inp" type="date" value="${esc(z.datum)}" data-in="kbi" data-i="${i}" data-k="datum"></div><div class="field"><label>Beleg-Nr.</label><input class="inp" inputmode="numeric" value="${esc(z.nr)}" data-in="kbi" data-i="${i}" data-k="nr"></div></div>
+         <button class="btn btn-sec press" data-act="kbiEdit" data-i="${i}">${ic('check')}Fertig</button></div>`:''}
+     </div>`;}).join('')}</div>`};
+}
+function kbiPruefeDup(z){const d=KB.duplikat(db.kassenbuch[(z.datum||'').slice(0,7)||KBI.monat]||[],z);if(z.dup&&!d)z.an=true;if(d)z.an=false;z.dup=d;}
+function kbiUebernehmen(){
+  const an=KBI.zeilen.filter(z=>z.an&&!z.dup);if(!an.length){toast('Keine Zeile ausgewählt');return;}
+  let n=0;
+  an.forEach(z=>{const ziel=/^\d{4}-\d{2}/.test(z.datum||'')?z.datum.slice(0,7):KBI.monat;const arr=db.kassenbuch[ziel]=db.kassenbuch[ziel]||[];
+    const e={datum:z.datum,desc:z.desc,typ:z.typ,betrag:String(Math.round((+z.betrag||0)*100)/100)};if(z.nr)e.nr=z.nr;
+    if(KB.duplikat(arr,e))return;arr.push(e);n++;});
+  persist();KBI=null;closeSheet();S.bseg='kasse';refresh();toast(n+' Einträge übernommen');
+}
 function kbSheet(i){
   const r=i!=null?(db.kassenbuch[S.bym]||[])[i]:null;
   KF={i,ym:S.bym,datum:r?r.datum:(S.bym===ymNow()?K.heuteIso():S.bym+'-01'),desc:r?r.desc:'',typ:r?r.typ:'einnahme',mwst:r?K.kbSatz(r):19,nr:r?(r.nr||''):KB.naechsteNr(db.kassenbuch[S.bym]||[]),storno:!!(r&&r.storno),_b:r?inNum(parseFloat(r.betrag)||0,true):''};
@@ -1964,6 +2089,12 @@ function kbLoeschen(ym,i){ // Kassenbuch: stornieren statt löschen (Eintrag ble
   undoToast('Eintrag storniert',()=>{delete z.storno;});
 }
 const A={
+  kbPaste:()=>kbPaste(),
+  kbiPruefen:()=>{const t=(KBI&&KBI.paste)||'';if(!t.trim()){toast('Bitte zuerst den Block einfügen');return;}kbBlock(t);},
+  kbiOk:()=>kbiUebernehmen(),
+  kbiAn:el=>{const z=KBI.zeilen[+el.dataset.i];if(!z||z.dup)return;z.an=!z.an;repaintSheet();},
+  kbiEdit:el=>{const i=+el.dataset.i;KBI.offen=KBI.offen===i?null:i;const z=KBI.zeilen[i];z.betrag=num(z._b);kbiPruefeDup(z);repaintSheet();},
+  kbiTyp:el=>{const z=KBI.zeilen[+el.dataset.i];z.typ=el.dataset.v;z.unsicher=false;kbiPruefeDup(z);repaintSheet();},
   tab:el=>{if(S.stack.length)pop(S.stack.length);closeSheet();showTab(el.dataset.t);},
   plus:()=>plusSheet(),
   back:()=>pop(),
@@ -2081,6 +2212,9 @@ const A={
 };
 function mfPatch(id){const it=db.catalog.find(i=>i.id===id);if(it){const p=K.preisFuer(db,it,MF.cid);const q=K.mengeAus(MF.m[id]);const l=document.getElementById('mfL'+id);if(l)l.textContent=eur(p)+' / '+(it.unit||'Stück')+(q?' · '+eur(q*p):'');}const c=$('#mfCalc');if(c)c.innerHTML=mfCalc();}
 const INP={
+  kbiTa:v=>{if(KBI)KBI.paste=v;},
+  kbi:(v,el)=>{const z=KBI&&KBI.zeilen[+el.dataset.i];if(!z)return;z[el.dataset.k]=v;if(el.dataset.k==='_b')z.betrag=num(v);z.unsicher=false;
+    const card=el.closest('.kbi-z');if(card)card.classList.remove('gelb');kbiPruefeDup(z);const s=$('#kbiSum');if(s){const t=document.createElement('div');t.innerHTML=kbiSummen();s.replaceWith(t.firstChild);}},
   kbAnf:v=>{const t=String(v).trim();if(!t){if(db.settings.kbAnfang&&db.settings.kbAnfang.monat===S.bym)delete db.settings.kbAnfang;}else db.settings.kbAnfang={monat:S.bym,betrag:num(t)};persist();},
   rq:v=>{S.rq=v;const s=$('#scr-rechnungen');const l=s.querySelector('#rlist');const tmp=document.createElement('div');tmp.innerHTML=VIEWS.rechnungen().body;l.innerHTML=tmp.querySelector('#rlist').innerHTML;},
   kq:v=>{S.kq=v;const t=top();const inp=t.querySelector('[data-in="kq"]');const pos=inp.selectionStart;paint(t);const n=t.querySelector('[data-in="kq"]');n.focus();try{n.setSelectionRange(pos,pos);}catch(e){}},
