@@ -646,7 +646,7 @@ body{position:fixed;top:0;left:0;right:0;bottom:auto;width:100%;height:var(--app
 </script>
 <script>(function(){function h(){document.documentElement.style.setProperty('--app-h',window.innerHeight+'px');}
 h();addEventListener('resize',h);addEventListener('orientationchange',function(){setTimeout(h,300);});addEventListener('pageshow',h);})();</script>
-<!-- Version 7 -->
+<!-- Version 8 -->
 </head>
 <body>
 <div class="stage">
@@ -1612,7 +1612,7 @@ async function pdfAusgeben(inv,stufe,btn){
     const blob=await pdfBlob(inv,stufe);
     const name=(stufe?(K.MAHN_TEXTE[stufe].titel+' '+inv.nr):K.ablageName(db,inv))+'.pdf';
     const r=await dateiGeben(blob,name.replace(/[\\/:*?"<>|]+/g,' '));
-    if(r==='gespeichert'||r==='geteilt')toast('PDF fertig',name);
+    if(r==='gespeichert'||r==='geteilt'){if(!stufe&&!inv.pdfAm){inv.pdfAm=new Date().toISOString();persist();}toast('PDF fertig',name);}
     else if(r==='fehler')toast('PDF konnte nicht gespeichert werden',null,'warn');
   }catch(e){toast('PDF konnte nicht erstellt werden','Bitte Internet prüfen und nochmal versuchen','warn');}
   finally{if(btn){btn.disabled=false;btn.innerHTML=btn.dataset.lbl;btn.removeAttribute('aria-busy');}}
@@ -2704,6 +2704,30 @@ body.pill-on .screen .nav-t{opacity:0!important}
     return out;
   }
 
+  // ── Doppelte Rechnungsnummern nach dem Abgleich klären (Arbers Regel) ──
+  // Die NEUERE Rechnung bekommt die nächste freie Nummer ihres Kunden – aber nur, wenn sie noch
+  // nicht gedruckt, als PDF gesichert, verschickt, gemahnt oder bezahlt ist und gerade nicht offen bearbeitet wird.
+  // Sonst bleibt alles, wie es ist, und Kontor warnt nur. Stornierte Rechnungen behalten ihre Nummer (gilt als belegt).
+  function erstelltZeit(i) { const id = String(i && i.id || ''); const t = parseInt(id.slice(0, -5), 36); return (id.length >= 12 && t > 1.5e12 && t < 4e12) ? t : 0; }
+  function istFest(i) { return !!(i.gedrucktAm || i.pdfAm || i.mailAm || (i.mahnungen && i.mahnungen.length) || i.status === 'bezahlt'); }
+  function nummernKlaeren(db, o) {
+    o = o || {}; const geaendert = [], warnung = [];
+    doppelteNummern(db).forEach(g => {
+      const s = g.slice().sort((a, b) => (erstelltZeit(a) - erstelltZeit(b)) || String(a.id).localeCompare(String(b.id)));
+      s.slice(1).forEach(inv => {
+        const c = inv.customerId && (db.customers || []).find(x => x && x.id === inv.customerId);
+        if (istFest(inv) || !c || !erstelltZeit(inv) || typeof o.naechsteNr !== 'function' || (o.offen && o.offen(inv.id))) { warnung.push(inv); return; }
+        const belegt = new Set((db.invoices || []).filter(i => i && i.nr).map(i => String(i.nr).trim().toUpperCase()));
+        let nr = '', n = 0, frei = false;
+        while (n++ < 500) { nr = String(o.naechsteNr(c) || ''); c.nextNr = (parseInt(c.nextNr) || 1) + 1; if (nr && !belegt.has(nr.trim().toUpperCase())) { frei = true; break; } }
+        if (!frei) { warnung.push(inv); return; }
+        const alt = inv.nr; inv.nr = nr; inv.nrAlt = alt; inv.nrGeaendertAm = new Date().toISOString();
+        geaendert.push({ inv, alt, neu: nr, kunde: (inv.customer && inv.customer.name) || c.name || '' });
+      });
+    });
+    return { geaendert, warnung };
+  }
+
   // ── Anmeldung bei Firebase (E-Mail + Passwort), ohne Zusatzpaket ──
   // Die Anmeldung bleibt auf dem Gerät gespeichert (Refresh-Token); einmal anmelden reicht.
   function createAuth(o) {
@@ -2755,7 +2779,7 @@ body.pill-on .screen .nav-t{opacity:0!important}
     return api;
   }
 
-  const KSync = { create, createAuth, split, applyDoc, hash, tsNum, tsIso, doppelteNummern, LOCAL_SETTINGS };
+  const KSync = { create, createAuth, split, applyDoc, hash, tsNum, tsIso, doppelteNummern, nummernKlaeren, istFest, erstelltZeit, LOCAL_SETTINGS };
   if (typeof module !== 'undefined' && module.exports) module.exports = KSync;
   root.KSync = KSync;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -2767,6 +2791,18 @@ body.pill-on .screen .nav-t{opacity:0!important}
 'use strict';
 const CONFIG={"aktiv": true, "apiKey": "AIzaSyBpF1xZ-C1q9S6t2cFJV6J6z3YKtz0m8uI", "projectId": "kontorrug", "sammlung": "daten"};
 const K=()=>window.__kontor;
+// Doppelte Rechnungsnummern nach dem Abgleich: neuere, noch nicht gedruckte/verschickte Rechnung bekommt die nächste freie Nummer
+function nummernPruefen(){
+  try{const k=K();
+    const r=KSync.nummernKlaeren(k.db,{naechsteNr:c=>k.K.getNextNrForCustomer(c),
+      offen:id=>{const t=k.top&&k.top();const F=k.edF&&k.edF();return !!(t&&t.dataset.view==='editor'&&F&&F.id===id);}});
+    if(r.geaendert.length){k.persist();neuZeichnen();
+      const g=r.geaendert[0];k.toast('Nummer '+g.alt+' gab es doppelt','Rechnung '+(g.kunde?'für '+g.kunde+' ':'')+'hat jetzt die Nummer '+g.neu+(r.geaendert.length>1?' (und '+(r.geaendert.length-1)+' weitere)':''));}
+    const d=KSync.doppelteNummern(k.db);
+    if(d.length)setTimeout(()=>k.toast('Nummer '+d.map(g=>g[0].nr).join(', ')+' gibt es doppelt','Schon gedruckt oder verschickt – bitte selbst prüfen','warn'),r.geaendert.length?2600:0);
+  }catch(e){}
+}
+
 let ks=null,lastTxt='',pillT=null,waitRefresh=false;
 function pill(txt,art,bleibt,klick){
   let p=document.getElementById('ksPill');
@@ -2821,7 +2857,7 @@ function start(){
     saveState:async st=>{try{localStorage.setItem('kontorAbgleich',JSON.stringify(st));}catch(e){}},
     mayUpload:()=>false, // das Handy lädt nie als Erstes hoch – die Daten kommen vom PC
     onRemote:async()=>{K().persist();neuZeichnen();pill('Vom PC aktualisiert');
-      try{const d=KSync.doppelteNummern(K().db);if(d.length)K().toast('Nummer '+d.map(g=>g[0].nr).join(', ')+' gibt es doppelt','Bitte prüfen','warn');}catch(e){}},
+      nummernPruefen();},
     onReplaceAll:async neu=>{
       try{localStorage.setItem('kontorVorAbgleich',new Date().toISOString());}catch(e){}
       const k=K();const d=k.normDb(neu);delete d.settings.handyDemo;
