@@ -415,7 +415,14 @@ details>summary{list-style:none}details>summary::-webkit-details-marker{display:
 .big-cta .ic{width:26px;height:26px;stroke-width:2.1}
 .big-cta b{display:block;font-size:1rem}
 .big-cta small{display:block;font-size:.765rem;opacity:.85;font-weight:500}
-.kb-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.kb-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.kb-cards .kb-best{grid-column:1/-1;display:flex;align-items:baseline;justify-content:space-between}
+.kb-cards .kb-best b{font-size:1.18rem}
+.kb-note{padding:12px 14px;border-radius:14px;font-size:.88rem;line-height:1.35;background:var(--card);border:1px solid var(--line)}
+.kb-note.bad{border-color:var(--red);color:var(--bad)}
+.kb-note .amount-wrap{margin-top:8px}
+.row.storno b,.row.storno small{text-decoration:line-through;opacity:.55}
+.amt-bank{color:var(--text-2)}
 .kb-cards>div{padding:12px;border-radius:14px;background:var(--card);border:1px solid var(--line);min-width:0}
 .kb-cards small{display:block;font-size:.706rem;color:var(--text-3)}
 .kb-cards b{display:block;font-size:.882rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -505,6 +512,70 @@ details>summary{list-style:none}details>summary::-webkit-details-marker{display:
 @media not all and (min-width:520px) and (min-height:700px) and (hover:hover) and (pointer:fine){:root{--sb:0px;--home:env(safe-area-inset-bottom,0px)}}
 html,body{height:100%;overflow:hidden;overscroll-behavior:none}
 body{position:fixed;top:0;left:0;right:0;bottom:auto;width:100%;height:var(--app-h,100%)}</style>
+<script>
+/* Kassenbuch-Kern für Kontor (PC und Handy gleich).
+   Einträge: {datum, desc, typ, betrag, mwst?, nr?, storno?}
+   typ: 'einnahme' | 'ausgabe' | 'bank_ein' (Bankeinzahlung: Kasse → Bank) | 'bank_ab' (Bankabhebung: Bank → Kasse)
+   Bankeinzahlung/-abhebung sind Geldtransit: keine MwSt., kein Umsatz, keine Kosten – sie ändern nur den Kassenbestand.
+   Stornierte Einträge (storno:true) bleiben sichtbar, zählen aber nirgends mehr.
+   Anfangsbestand: db.settings.kbAnfang = {monat:'YYYY-MM', betrag:Zahl} – einmal von Hand, danach Übertrag automatisch. */
+(function (root) {
+  'use strict';
+  const ARTEN = { einnahme: 'Einnahme', ausgabe: 'Ausgabe', bank_ein: 'Bankeinzahlung', bank_ab: 'Bankabhebung' };
+  const WAHL = ['einnahme', 'ausgabe', 'bank_ein']; // zur Auswahl (Kassenbuch = nur Bargeld; Geld geht nur zur Bank)
+  const zahl = v => { const n = parseFloat(String(v == null ? '' : v).replace(',', '.')); return isFinite(n) ? n : 0; };
+  const r2 = n => Math.round(n * 100) / 100;
+  const gilt = r => !!r && !r.storno;
+  const istBank = r => !!r && (r.typ === 'bank_ein' || r.typ === 'bank_ab');
+  function summe(rows, typ) { return r2((rows || []).filter(r => gilt(r) && r.typ === typ).reduce((a, r) => a + zahl(r.betrag), 0)); }
+  function satz(r) { if (istBank(r)) return 0; const v = parseInt(r && r.mwst, 10); return [0, 7, 19].includes(v) ? v : 19; }
+  function vorMonat(ym) { let y = +ym.slice(0, 4), m = +ym.slice(5, 7) - 1; if (m < 1) { m = 12; y--; } return y + '-' + String(m).padStart(2, '0'); }
+  function nachMonat(ym) { let y = +ym.slice(0, 4), m = +ym.slice(5, 7) + 1; if (m > 12) { m = 1; y++; } return y + '-' + String(m).padStart(2, '0'); }
+  function bewegung(rows) { // Veränderung des Kassenbestands im Monat
+    return r2(summe(rows, 'einnahme') - summe(rows, 'ausgabe') - summe(rows, 'bank_ein') + summe(rows, 'bank_ab'));
+  }
+  // Anfangsbestand eines Monats (null = unbekannt, noch nicht eingetragen). override: {ym: rows} für den gerade bearbeiteten Monat
+  function anfang(db, ym, override) {
+    const a = db && db.settings && db.settings.kbAnfang;
+    if (!a || !/^\d{4}-\d{2}$/.test(a.monat || '') || ym < a.monat) return null;
+    let b = zahl(a.betrag), m = a.monat, n = 0;
+    while (m < ym && n++ < 600) { const rows = (override && override[m]) || (db.kassenbuch || {})[m] || []; b = r2(b + bewegung(rows)); m = nachMonat(m); }
+    return r2(b);
+  }
+  function monat(db, ym, rows) {
+    rows = rows || (db.kassenbuch || {})[ym] || [];
+    const ov = {}; ov[ym] = rows;
+    const start = anfang(db, ym, ov);
+    const ein = summe(rows, 'einnahme'), aus = summe(rows, 'ausgabe'), bankEin = summe(rows, 'bank_ein'), bankAb = summe(rows, 'bank_ab');
+    const ende = start == null ? null : r2(start + ein - aus - bankEin + bankAb);
+    // Tagesverlauf: nach Datum, bei gleichem Datum in Eingabe-Reihenfolge
+    const neg = []; let lauf = start == null ? 0 : start, min = null, minTag = '';
+    rows.map((r, i) => ({ r, i })).filter(x => gilt(x.r)).sort((a, b) => (a.r.datum || '').localeCompare(b.r.datum || '') || a.i - b.i)
+      .forEach(({ r }, k, arr) => {
+        const v = zahl(r.betrag); lauf = r2(lauf + (r.typ === 'einnahme' || r.typ === 'bank_ab' ? v : -v));
+        const naechster = arr[k + 1]; if (naechster && (naechster.r.datum || '') === (r.datum || '')) return; // Tagesende abwarten
+        if (min == null || lauf < min) { min = lauf; minTag = r.datum || ''; }
+        if (lauf < -0.004) neg.push({ datum: r.datum || '', bestand: lauf });
+      });
+    return { start, ein, aus, bankEin, bankAb, bank: r2(bankEin - bankAb), ende, neg: start == null ? [] : neg, min, minTag };
+  }
+  function naechsteNr(rows) {
+    let max = 0; (rows || []).forEach(r => { const n = parseInt(String(r && r.nr || '').replace(/\D/g, ''), 10); if (n > max) max = n; });
+    return String(max + 1);
+  }
+  // Art vorschlagen aus Text und Spalte ('einnahmen' | 'ausgaben')
+  function artVorschlag(text, spalte) {
+    const t = String(text || '').toLowerCase();
+    if (/einzahl|bank\s*ein|zur bank|auf.*bank/.test(t)) return 'bank_ein';
+    if (spalte === 'ausgaben' || /^ausg|ausgabe/.test(t)) return 'ausgabe';
+    return 'einnahme';
+  }
+  function gleich(a, b) { return (a.datum || '') === (b.datum || '') && String(a.nr || '').trim() === String(b.nr || '').trim() && Math.abs(zahl(a.betrag) - zahl(b.betrag)) < 0.005; }
+  function duplikat(rows, z) { return (rows || []).some(r => gleich(r, z)); }
+  root.KB = { ARTEN, WAHL, zahl, gilt, istBank, summe, satz, vorMonat, nachMonat, bewegung, anfang, monat, naechsteNr, artVorschlag, duplikat, gleich };
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
 <script>(function(){function h(){document.documentElement.style.setProperty('--app-h',window.innerHeight+'px');}
 h();addEventListener('resize',h);addEventListener('orientationchange',function(){setTimeout(h,300);});addEventListener('pageshow',h);})();</script>
 <!-- Version 6 -->
@@ -955,9 +1026,9 @@ function getMonatData(db,monat){
   const einNetto=invEin.reduce((a,i)=>a+calcInvTotals(i).netAfterProv,0);
   const einMwst=invEin.reduce((a,i)=>a+calcInvTotals(i).tax,0);
   const einBrutto=einNetto+einMwst;
-  const kbEin=(db.kassenbuch[monat]||[]).filter(r=>r.typ==='einnahme').reduce((a,r)=>a+(parseFloat(r.betrag)||0),0);
-  const kbAus=(db.kassenbuch[monat]||[]).filter(r=>r.typ==='ausgabe').reduce((a,r)=>a+(parseFloat(r.betrag)||0),0);
-  const kbNetto=typ=>(db.kassenbuch[monat]||[]).filter(r=>r.typ===typ).reduce((a,r)=>a+(parseFloat(r.betrag)||0)/(1+kbSatz(r)/100),0);
+  const kbEin=(db.kassenbuch[monat]||[]).filter(r=>r.typ==='einnahme'&&!r.storno).reduce((a,r)=>a+(parseFloat(r.betrag)||0),0);
+  const kbAus=(db.kassenbuch[monat]||[]).filter(r=>r.typ==='ausgabe'&&!r.storno).reduce((a,r)=>a+(parseFloat(r.betrag)||0),0);
+  const kbNetto=typ=>(db.kassenbuch[monat]||[]).filter(r=>r.typ===typ&&!r.storno).reduce((a,r)=>a+(parseFloat(r.betrag)||0)/(1+kbSatz(r)/100),0);
   const kbEinNetto=kbNetto('einnahme'),kbEinMwst=kbEin-kbEinNetto;
   const kbAusNetto=kbNetto('ausgabe'),kbAusVorsteuer=kbAus-kbAusNetto;
   const fixInMonat=db.fixkosten.filter(f=>!f.abMonat||f.abMonat<=monat);
@@ -1595,11 +1666,13 @@ VIEWS.belege=()=>{
      <section><div class="sec-h"><h2>Fixkosten</h2><span class="t3 num">${eur(d.fixBrutto)} / Monat</span></div>${db.fixkosten.length?`<div class="list">${db.fixkosten.map(a=>swipeRow(`<button class="row press" data-act="ausgabe" data-id="${a.id}">${thumbOf(a)}<span class="row-main"><b>${esc(a.name)}</b><small>${esc(a.kat||'')} · ab ${a.abMonat?ymShort(a.abMonat):'immer'}${a.abMonat&&a.abMonat>S.bym?' (noch nicht)':''}</small></span><b class="num">${eur(a.brutto||0)}</b></button>`,[`<button class="sw-del" data-act="afDelId" data-id="${a.id}">${ic('trash')}Löschen</button>`])).join('')}</div>`:leer('Noch keine Fixkosten.',`<button class="btn btn-sec press" data-act="fixNeu">${ic('plus')}Fixkosten anlegen</button>`)}</section>`;
   }else{
     const rows=(db.kassenbuch[S.bym]||[]).map((r,i)=>Object.assign({_i:i},r)).sort((a,b)=>(b.datum||'').localeCompare(a.datum||''));
-    const ein=rows.filter(r=>r.typ==='einnahme').reduce((a,r)=>a+(parseFloat(r.betrag)||0),0),aus=rows.filter(r=>r.typ==='ausgabe').reduce((a,r)=>a+(parseFloat(r.betrag)||0),0);
+    const km=KB.monat(db,S.bym);const anf=db.settings.kbAnfang;const zeigeAnf=km.start==null||(anf&&anf.monat===S.bym);
     const scans=db.kbScans.filter(s=>s.monat===S.bym);
-    body+=`<div class="kb-cards"><div><small>Einnahmen</small><b class="num amt-in">${eur(ein)}</b></div><div><small>Ausgaben</small><b class="num amt-out">${eur(aus)}</b></div><div><small>Saldo</small><b class="num">${eur(ein-aus)}</b></div></div>
+    body+=`<div class="kb-cards"><div class="kb-best"><small>Kassenbestand Monatsende</small><b class="num${km.ende!=null&&km.ende<0?' amt-out':''}">${km.ende==null?'–':eur(km.ende)}</b></div><div><small>Einnahmen</small><b class="num amt-in">${eur(km.ein)}</b></div><div><small>Ausgaben</small><b class="num amt-out">${eur(km.aus)}</b></div><div><small>Zur Bank</small><b class="num">${eur(km.bankEin)}</b></div><div><small>Anfangsbestand</small><b class="num">${km.start==null?'–':eur(km.start)}</b></div></div>
+     ${zeigeAnf?`<div class="kb-note">${km.start==null?'Einmal eintragen: Wie viel Bargeld war am Anfang von '+ymName(S.bym)+' in der Kasse?':'Anfangsbestand '+ymName(S.bym)+' – die Monate danach rechnen von selbst weiter.'}<div class="amount-wrap sm"><input class="amount num" inputmode="decimal" placeholder="0,00" value="${anf&&anf.monat===S.bym?esc(inNum(anf.betrag,true)):''}" data-in="kbAnf" aria-label="Anfangsbestand"><span>€</span></div></div>`:''}
+     ${km.neg.length?`<div class="kb-note bad">Achtung: Der Kassenbestand ist am ${km.neg.map(n=>fmtIso(n.datum)).join(', ')} unter 0 (${eur(km.neg[0].bestand)}). Ein Kassenbuch darf nie negativ sein.</div>`:''}
      <div class="two"><button class="btn btn-pri press" data-act="kbNeu">${ic('plus')}Eintrag</button><label class="btn btn-sec filebtn press">${ic('camera')}Scan<input type="file" accept="image/*,application/pdf" data-in="kbScan" aria-label="Kassenbuch-Seite scannen"></label></div>
-     <section><div class="sec-h"><h2>${ymName(S.bym)}</h2><span class="t3">${rows.length} Einträge</span></div>${rows.length?`<div class="list">${rows.map(r=>swipeRow(`<button class="row press" data-act="kb" data-i="${r._i}"><span class="row-ic" style="color:${r.typ==='einnahme'?'var(--ok)':'var(--bad)'}">${ic(r.typ==='einnahme'?'plus':'minus')}</span><span class="row-main"><b>${esc(r.desc||'–')}</b><small>${fmtIso(r.datum)} · ${K.kbSatz(r)} % MwSt.</small></span><b class="num ${r.typ==='einnahme'?'amt-in':'amt-out'}">${r.typ==='einnahme'?'':'− '}${eur(parseFloat(r.betrag)||0)}</b></button>`,[`<button class="sw-del" data-act="kfDelI" data-i="${r._i}">${ic('trash')}Löschen</button>`])).join('')}</div>`:leer('Noch keine Einträge in diesem Monat.',`<button class="btn btn-sec press" data-act="kbNeu">${ic('plus')}Eintrag hinzufügen</button>`)}</section>
+     <section><div class="sec-h"><h2>${ymName(S.bym)}</h2><span class="t3">${rows.length} Einträge</span></div>${rows.length?`<div class="list">${rows.map(r=>{const bank=KB.istBank(r),plus=r.typ==='einnahme'||r.typ==='bank_ab';return swipeRow(`<button class="row press${r.storno?' storno':''}" data-act="kb" data-i="${r._i}"><span class="row-ic" style="color:${bank?'var(--text-2)':plus?'var(--ok)':'var(--bad)'}">${ic(bank?'sync':plus?'plus':'minus')}</span><span class="row-main"><b>${esc(r.desc||KB.ARTEN[r.typ]||'–')}</b><small>${fmtIso(r.datum)}${r.nr?' · Nr. '+esc(r.nr):''} · ${r.storno?'storniert':bank?KB.ARTEN[r.typ]:KB.satz(r)+' % MwSt.'}</small></span><b class="num ${bank?'amt-bank':plus?'amt-in':'amt-out'}">${plus?'':'− '}${eur(parseFloat(r.betrag)||0)}</b></button>`,[`<button class="${r.storno?'sw-ok':'sw-del'}" data-act="kfDelI" data-i="${r._i}">${ic(r.storno?'undo':'ban')}${r.storno?'Aufheben':'Stornieren'}</button>`]);}).join('')}</div>`:leer('Noch keine Einträge in diesem Monat.',`<button class="btn btn-sec press" data-act="kbNeu">${ic('plus')}Eintrag hinzufügen</button>`)}</section>
      ${scans.length?`<section><div class="sec-h"><h2>Scans</h2><span class="t3">${scans.length}</span></div><div class="list">${scans.map(s=>`<button class="row press" data-act="kbScanOpen" data-id="${s.id}">${/^data:image\//.test(s.data)?`<span class="thumb"><img src="${s.data}" alt=""></span>`:`<span class="thumb">${ic('file')}<em>PDF</em></span>`}<span class="row-main"><b>${esc(s.name||'Scan')}</b><small>${fmtIso(s.datum)}${s.notiz?' · '+esc(s.notiz):''}</small></span>${ic('chev','chev')}</button>`).join('')}</div></section>`:''}`;
   }
   return{title:'Belege',body};
@@ -1712,18 +1785,20 @@ async function aiLesen(){
 let KF=null;
 function kbSheet(i){
   const r=i!=null?(db.kassenbuch[S.bym]||[])[i]:null;
-  KF={i,ym:S.bym,datum:r?r.datum:(S.bym===ymNow()?K.heuteIso():S.bym+'-01'),desc:r?r.desc:'',typ:r?r.typ:'einnahme',mwst:r?K.kbSatz(r):19,_b:r?inNum(parseFloat(r.betrag)||0,true):''};
+  KF={i,ym:S.bym,datum:r?r.datum:(S.bym===ymNow()?K.heuteIso():S.bym+'-01'),desc:r?r.desc:'',typ:r?r.typ:'einnahme',mwst:r?K.kbSatz(r):19,nr:r?(r.nr||''):KB.naechsteNr(db.kassenbuch[S.bym]||[]),storno:!!(r&&r.storno),_b:r?inNum(parseFloat(r.betrag)||0,true):''};
   sheetFrom({title:i!=null?'Eintrag':'Neuer Eintrag',done:{act:'kfSave',label:'Sichern'},dirty:()=>!!(KF&&KF._dirty),render:()=>({body:`
-    <div class="seg"><button class="${KF.typ==='einnahme'?'on':''}" data-act="kfTyp" data-v="einnahme">Einnahme</button><button class="${KF.typ==='ausgabe'?'on':''}" data-act="kfTyp" data-v="ausgabe">Ausgabe</button></div>
+    <div class="seg"><button class="${KF.typ==='einnahme'?'on':''}" data-act="kfTyp" data-v="einnahme">Einnahme</button><button class="${KF.typ==='ausgabe'?'on':''}" data-act="kfTyp" data-v="ausgabe">Ausgabe</button><button class="${KF.typ==='bank_ein'?'on':''}" data-act="kfTyp" data-v="bank_ein">Zur Bank</button></div>
+    ${KB.istBank(KF)?`<p class="small t3" style="margin:-4px 0 0">Bargeld von der Kasse zur Bank – keine MwSt., zählt nicht als Einnahme oder Ausgabe.</p>`:''}
     <div class="field"><label>Betrag</label><div class="amount-wrap sm"><input class="amount num" id="kfB" inputmode="decimal" placeholder="0,00" value="${esc(KF._b)}" data-in="kf" data-k="_b"><span>€</span></div></div>
-    ${KF.typ==='ausgabe'?`<div class="field"><label>MwSt. im Betrag</label><div class="seg">${[19,7,0].map(v=>`<button class="${KF.mwst===v?'on':''}" data-act="kfMwst" data-v="${v}">${v} %</button>`).join('')}</div></div>`:'<p class="small t3">Kasse: Betrag brutto, enthält 19 % MwSt.</p>'}
+    ${KF.typ==='ausgabe'?`<div class="field"><label>MwSt. im Betrag</label><div class="seg">${[19,7,0].map(v=>`<button class="${KF.mwst===v?'on':''}" data-act="kfMwst" data-v="${v}">${v} %</button>`).join('')}</div></div>`:(KB.istBank(KF)?'':'<p class="small t3">Kasse: Betrag brutto, enthält 19 % MwSt.</p>')}
     <div class="field"><label>Beschreibung</label><input class="inp" value="${esc(KF.desc)}" placeholder="z. B. Barverkauf Theke" data-in="kf" data-k="desc"></div>
-    <div class="field"><label>Datum</label><input class="inp" type="date" value="${esc(KF.datum)}" data-in="kf" data-k="datum"></div>
-    ${i!=null?`<button class="btn-text danger press" data-act="kfDel">${ic('trash')}Eintrag löschen</button>`:''}`})});
+    <div class="grid2"><div class="field"><label>Datum</label><input class="inp" type="date" value="${esc(KF.datum)}" data-in="kf" data-k="datum"></div><div class="field"><label>Beleg-Nr.</label><input class="inp" inputmode="numeric" value="${esc(KF.nr)}" placeholder="–" data-in="kf" data-k="nr"></div></div>
+    ${i!=null?`<button class="btn-text danger press" data-act="kfDel">${ic(KF.storno?'undo':'ban')}${KF.storno?'Storno aufheben':'Eintrag stornieren'}</button>`:''}`})});
 }
 function kfSpeichern(){
   const b=num(KF._b);if(!(b>0)&&!String(KF.desc).trim()){feldFehler($('#kfB'),'Bitte einen Betrag eintragen, z. B. 12,50.');return;}
   const zeile={datum:KF.datum,desc:String(KF.desc||'').trim(),typ:KF.typ,betrag:String(b)};
+  if(String(KF.nr||'').trim())zeile.nr=String(KF.nr).trim();if(KF.storno)zeile.storno=true;
   const alt=KF.i!=null?(db.kassenbuch[KF.ym]||[])[KF.i]:null;
   if(KF.typ==='ausgabe'&&(KF.mwst!==19||(alt&&alt.mwst!=null)))zeile.mwst=KF.mwst;
   const ziel=(KF.datum&&/^\d{4}-\d{2}/.test(KF.datum))?KF.datum.slice(0,7):KF.ym;
@@ -1882,9 +1957,11 @@ function ausgabeLoeschen(id){
   const a=db[arr].find(x=>x.id===id),idx=db[arr].indexOf(a);db[arr]=db[arr].filter(x=>x.id!==id);persist();refresh();
   undoToast((a.fix?'Fixkosten':'Ausgabe')+' gelöscht',()=>{if(!db[arr].some(x=>x.id===id))db[arr].splice(Math.min(idx,db[arr].length),0,a);});
 }
-function kbLoeschen(ym,i){
-  const arr=db.kassenbuch[ym]||[];const z=arr[i];if(!z)return;arr.splice(i,1);if(arr.length)db.kassenbuch[ym]=arr;else delete db.kassenbuch[ym];persist();refresh();
-  undoToast('Eintrag gelöscht',()=>{const a=db.kassenbuch[ym]=db.kassenbuch[ym]||[];if(!a.includes(z))a.splice(Math.min(i,a.length),0,z);});
+function kbLoeschen(ym,i){ // Kassenbuch: stornieren statt löschen (Eintrag bleibt durchgestrichen sichtbar)
+  const arr=db.kassenbuch[ym]||[];const z=arr[i];if(!z)return;
+  if(z.storno){delete z.storno;persist();refresh();toast('Storno aufgehoben');return;}
+  z.storno=true;persist();refresh();
+  undoToast('Eintrag storniert',()=>{delete z.storno;});
 }
 const A={
   tab:el=>{if(S.stack.length)pop(S.stack.length);closeSheet();showTab(el.dataset.t);},
@@ -2004,6 +2081,7 @@ const A={
 };
 function mfPatch(id){const it=db.catalog.find(i=>i.id===id);if(it){const p=K.preisFuer(db,it,MF.cid);const q=K.mengeAus(MF.m[id]);const l=document.getElementById('mfL'+id);if(l)l.textContent=eur(p)+' / '+(it.unit||'Stück')+(q?' · '+eur(q*p):'');}const c=$('#mfCalc');if(c)c.innerHTML=mfCalc();}
 const INP={
+  kbAnf:v=>{const t=String(v).trim();if(!t){if(db.settings.kbAnfang&&db.settings.kbAnfang.monat===S.bym)delete db.settings.kbAnfang;}else db.settings.kbAnfang={monat:S.bym,betrag:num(t)};persist();},
   rq:v=>{S.rq=v;const s=$('#scr-rechnungen');const l=s.querySelector('#rlist');const tmp=document.createElement('div');tmp.innerHTML=VIEWS.rechnungen().body;l.innerHTML=tmp.querySelector('#rlist').innerHTML;},
   kq:v=>{S.kq=v;const t=top();const inp=t.querySelector('[data-in="kq"]');const pos=inp.selectionStart;paint(t);const n=t.querySelector('[data-in="kq"]');n.focus();try{n.setSelectionRange(pos,pos);}catch(e){}},
   sf:(v,el)=>{SF[el.dataset.k]=v;if(el.dataset.k==='_n'){const c=$('#sfCalc');if(c)c.innerHTML=sfCalc();}},
